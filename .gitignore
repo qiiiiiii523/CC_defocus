@@ -1,0 +1,34 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local datasets and generated inspection files
+data/
+备用data/
+prepared/images/
+prepared/previews/
+prepared/reports/
+
+# Model outputs, weights, and training artifacts
+outputs/
+checkpoints/
+weights/
+runs/
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# Downloaded archives and temporary files
+*.zip
+*.tmp
+/image.png
