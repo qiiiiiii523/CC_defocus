@@ -10,7 +10,7 @@ from PIL import Image
 import torch
 
 from common_io import PROJECT_ROOT, load_manifest, load_pair, save_prediction
-from unet_model import SmallUNet
+from unet_model import MODEL_VERSION, SmallUNet
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +52,11 @@ def main() -> None:
         raise SystemExit("Manifest contains no records")
 
     checkpoint = torch.load(args.checkpoint, map_location=device)
+    if checkpoint.get("model_version") != MODEL_VERSION:
+        raise SystemExit(
+            f"Checkpoint architecture mismatch: expected {MODEL_VERSION}, "
+            f"found {checkpoint.get('model_version')!r}. Retrain with the current code."
+        )
     model = SmallUNet().to(device)
     model.load_state_dict(checkpoint["model_state"])
     model.eval()

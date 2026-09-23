@@ -1,10 +1,13 @@
-"""Small RGB-to-RGB U-Net used as a deterministic restoration baseline."""
+"""Small residual RGB-to-RGB U-Net restoration baseline."""
 
 from __future__ import annotations
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+
+MODEL_VERSION = "residual_v1"
 
 
 class DoubleConv(nn.Sequential):
@@ -20,10 +23,11 @@ class DoubleConv(nn.Sequential):
 
 
 class SmallUNet(nn.Module):
-    """Four-level U-Net: 3 -> 16 -> 32 -> 64 -> 128 -> 256 -> 3.
+    """Four-level U-Net that predicts a correction to the blurred input.
 
     The decoder uses bilinear interpolation to the exact skip-connection size,
     so the output retains the input height and width even for odd dimensions.
+    The final convolution starts at zero: before training, output equals input.
     """
 
     def __init__(self) -> None:
@@ -40,6 +44,8 @@ class SmallUNet(nn.Module):
         self.decoder2 = DoubleConv(64 + 32, 32)
         self.decoder1 = DoubleConv(32 + 16, 16)
         self.output = nn.Conv2d(16, 3, kernel_size=1)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
 
     @staticmethod
     def _upsample_and_join(deeper: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
@@ -64,4 +70,5 @@ class SmallUNet(nn.Module):
         d3 = self.decoder3(self._upsample_and_join(d4, e3))
         d2 = self.decoder2(self._upsample_and_join(d3, e2))
         d1 = self.decoder1(self._upsample_and_join(d2, e1))
-        return torch.sigmoid(self.output(d1))
+        correction = self.output(d1)
+        return torch.clamp(image + correction, min=0.0, max=1.0)

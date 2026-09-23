@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 
 from common_io import PROJECT_ROOT, load_manifest
 from unet_data import PairedImages
-from unet_model import SmallUNet
+from unet_model import MODEL_VERSION, SmallUNet
 
 
 DEFAULT_TRAIN = PROJECT_ROOT / "prepared/manifests/debug_train.jsonl"
@@ -119,8 +119,8 @@ def main() -> None:
     criterion = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     mode = "overfit8" if args.overfit_eight else "debug"
-    checkpoint = args.checkpoint or PROJECT_ROOT / f"checkpoints/unet_{mode}.pt"
-    log_path = args.log or PROJECT_ROOT / f"runs/unet_{mode}.csv"
+    checkpoint = args.checkpoint or PROJECT_ROOT / f"checkpoints/unet_{mode}_{MODEL_VERSION}.pt"
+    log_path = args.log or PROJECT_ROOT / f"runs/unet_{mode}_{MODEL_VERSION}.csv"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -149,6 +149,7 @@ def main() -> None:
                 best = score
                 torch.save({
                     "model_state": model.state_dict(),
+                    "model_version": MODEL_VERSION,
                     "epoch": epoch,
                     "seed": args.seed,
                     "mode": mode,
@@ -171,6 +172,7 @@ def main() -> None:
         "seed": args.seed,
         "device": str(device),
         "loss": "L1",
+        "model_version": MODEL_VERSION,
         "best_checkpoint": str(checkpoint),
         "torch_version": torch.__version__,
     }
