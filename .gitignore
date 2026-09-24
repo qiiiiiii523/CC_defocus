@@ -32,3 +32,5 @@ runs/
 *.zip
 *.tmp
 /image.png
+
+.venv-rfn/

@@ -1,0 +1,6 @@
+# This adapter targets tf.keras 2.10; GPU support depends on the host CUDA stack.
+tensorflow==2.10.1
+numpy>=1.23,<2
+Pillow>=9,<11
+opencv-python>=4.7,<5
+
