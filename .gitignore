@@ -6,6 +6,7 @@ __pycache__/
 venv/
 
 # IDE and operating-system files
+.ipynb_checkpoints/
 .idea/
 .vscode/
 .DS_Store
