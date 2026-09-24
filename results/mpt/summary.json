@@ -1,0 +1,36 @@
+{
+  "model_name": "mpt",
+  "prediction_source": "model_output",
+  "manifest": "prepared/manifests/debug_val.jsonl",
+  "prediction_dir": "outputs/mpt",
+  "evaluated_count": 300,
+  "metrics": {
+    "psnr": {
+      "mean": 34.011330969400774,
+      "std": 1.8349148226181655
+    },
+    "ssim": {
+      "mean": 0.8904043251276016,
+      "std": 0.028548740331359894
+    },
+    "lpips": {
+      "mean": 0.1040103884289662,
+      "std": 0.02902061259447513
+    }
+  },
+  "settings": {
+    "rgb": true,
+    "data_range": 1.0,
+    "crop_border": 0,
+    "resize": false,
+    "ssim_channel_axis": -1,
+    "lpips_backbone": "alex",
+    "lpips_input_range": [
+      -1.0,
+      1.0
+    ],
+    "lpips_normalize": false,
+    "std_ddof": 0,
+    "lpips_device": "cpu"
+  }
+}
