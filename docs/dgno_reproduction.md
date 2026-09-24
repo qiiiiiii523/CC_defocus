@@ -17,11 +17,19 @@
 cd /root/autodl-tmp/CC_defocus
 conda env create -f environment/dgno.yml
 conda activate dgno
+pip install setuptools==75.8.0 ninja==1.13.2 transformers==4.44.2
 pip install mamba-ssm==2.2.2 --no-build-isolation
-cd third_party/DGNO
-python setup.py develop --no_cuda_ext
-cd ../..
 ```
+
+DGNO 推理脚本会直接从 `third_party/DGNO` 导入官方源码，不需要运行其 `setup.py develop`。官方裁剪仓库未包含三个可选扩展的源码，强行执行可编辑安装会失败，但这些扩展不参与本项目的 DGNO 推理。
+
+当前 AutoDL 服务器不能直接访问 GitHub Release，因此实际安装使用了上传到数据盘的官方预编译 wheel：
+
+```bash
+pip install --no-deps /root/autodl-tmp/mamba_ssm-2.2.2+cu122torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+```
+
+该 wheel 的 SHA-256 为 `6b082468a6abb6f6bc50c99263f17c6c7f5a2e8f6b275ed7998b81fb25279229`。`environment/dgno-freeze.txt` 记录本次成功导入 DGNO 后的完整包版本；它是实验快照，不是跨机器安装入口。
 
 安装后检查：
 

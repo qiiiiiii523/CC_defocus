@@ -72,8 +72,8 @@ results/{model_name}/summary.json
 ```bash
 conda env create -f environment/dgno.yml
 conda activate dgno
+pip install setuptools==75.8.0 ninja==1.13.2 transformers==4.44.2
 pip install mamba-ssm==2.2.2 --no-build-isolation
-cd third_party/DGNO && python setup.py develop --no_cuda_ext && cd ../..
 python scripts/dgno/download_weights.py --variant face
 python scripts/dgno/infer.py --variant face --limit 5
 python scripts/dgno/infer.py --variant face
