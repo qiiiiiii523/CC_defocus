@@ -8,22 +8,34 @@ import time
 
 import numpy as np
 
-from common_io import save_prediction
-from rfn_adapter import RFNConfig, ROOT, check_kernel_masks, make_inputs, records
+from common_io import SampleRecord, save_prediction
+from rfn_adapter import RFNConfig, ROOT, make_inputs, records
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--weights", required=True)
     p.add_argument("--manifest", default="prepared/manifests/debug_val.jsonl")
+    p.add_argument("--input", help="Single blurry PNG or directory of blurry PNGs; no clear images needed")
     p.add_argument("--limit", type=int, default=0, help="Use 5-10 only for smoke checks; omit for all IDs")
     args = p.parse_args()
-    items = records(args.manifest, "val")
+    if args.input:
+        path = (ROOT / args.input).resolve()
+        if path.is_file():
+            paths = [path]
+        elif path.is_dir():
+            paths = sorted(path.glob("*.png"))
+        else:
+            p.error(f"No such input image or directory: {path}")
+        if not paths:
+            p.error(f"No PNG images in {path}")
+        items = [SampleRecord(file.stem, "val", file, file) for file in paths]
+    else:
+        items = records(args.manifest, "val")
     if args.limit < 0:
         p.error("limit must be nonnegative")
     if args.limit:
         items = items[:args.limit]
-    check_kernel_masks(items)
     weights = (ROOT / args.weights).resolve()
     if not weights.is_file():
         raise FileNotFoundError(weights)
@@ -48,4 +60,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
