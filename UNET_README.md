@@ -27,4 +27,18 @@ python evaluate.py --model-name unet
 
 训练日志在 `runs/unet_debug_residual_v1.csv`，配置在 `runs/unet_debug_residual_v1.json`，权重在 `checkpoints/unet_debug_residual_v1.pt`。预测图写入 `outputs/unet/`；前十组对照图写入 `prepared/previews/unet/`，从左到右依次为模糊图、恢复图、清晰参考。`evaluate.py` 负责 PSNR、SSIM、LPIPS，模型代码不另算指标。
 
+训练还会每轮保存 `checkpoints/unet_debug_residual_v1_last.pt`，其中包含最新模型、优化器和随机状态。`unet_debug_residual_v1.pt` 仍是验证 L1 最佳权重，供 `predict_unet.py` 使用。若训练中断，使用与首次训练相同的参数和文件路径，加上 `--resume`；`--epochs` 表示最终总轮数，不是额外轮数。例如先计划训练到 200 轮：
+
+```bash
+python train_unet.py --epochs 200 --batch-size 16 --lr 0.001 --seed 42 --device cuda --checkpoint checkpoints/unet_debug_residual_v1_b16_e200.pt --log runs/unet_debug_residual_v1_b16_e200.csv
+```
+
+如果在第 80 轮之后中断，用下面的命令从第 81 轮接着训练至第 200 轮：
+
+```bash
+python train_unet.py --epochs 200 --batch-size 16 --lr 0.001 --seed 42 --device cuda --checkpoint checkpoints/unet_debug_residual_v1_b16_e200.pt --log runs/unet_debug_residual_v1_b16_e200.csv --resume
+```
+
+对应的续训状态文件是 `checkpoints/unet_debug_residual_v1_b16_e200_last.pt`。若之后决定训练至第 250 轮，只需把续训命令的 `--epochs` 改成 `250`，其余参数和路径保持一致。旧版检查点只有最佳模型权重，没有优化器状态，不能用于 `--resume`；需要用更新后的脚本开始一次新训练。
+
 以上结果仅是 2,000/300 子集上的调试基线。正式比较应另行使用官方完整训练集训练及完整验证集评价；本分支的训练脚本目前特意限制为固定调试清单，避免误把测试集混入训练。

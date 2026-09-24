@@ -1,7 +1,8 @@
 """Train the small U-Net on fixed 3DHistech pairs.
 
 Use --overfit-eight first to check that the pipeline can learn eight fixed
-training pairs. A separate invocation starts a fresh model for all 2,000 pairs.
+training pairs. A separate invocation starts a fresh model for all 2,000 pairs;
+--resume continues a previously interrupted invocation.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--log", type=Path, default=None)
+    parser.add_argument("--resume", action="store_true", help="Continue from the latest training state; --epochs is the total target")
     return parser.parse_args()
 
 
@@ -120,6 +122,7 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     mode = "overfit8" if args.overfit_eight else "debug"
     checkpoint = args.checkpoint or PROJECT_ROOT / f"checkpoints/unet_{mode}_{MODEL_VERSION}.pt"
+    latest_checkpoint = checkpoint.with_name(f"{checkpoint.stem}_last{checkpoint.suffix}")
     log_path = args.log or PROJECT_ROOT / f"runs/unet_{mode}_{MODEL_VERSION}.csv"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,32 +132,102 @@ def main() -> None:
         f"batch_size={args.batch_size} device={device}", flush=True
     )
     best = float("inf")
-    with log_path.open("w", encoding="utf-8", newline="") as handle:
+    start_epoch = 1
+    if args.resume:
+        if not latest_checkpoint.is_file():
+            raise SystemExit(f"No resumable training state: {latest_checkpoint}")
+        state = torch.load(latest_checkpoint, map_location="cpu", weights_only=False)
+        expected = {
+            "model_version": MODEL_VERSION,
+            "mode": mode,
+            "seed": args.seed,
+            "batch_size": args.batch_size,
+            "learning_rate": args.lr,
+            "train_manifest": str(args.train_manifest.resolve()),
+            "val_manifest": None if args.overfit_eight else str(args.val_manifest.resolve()),
+        }
+        for key, value in expected.items():
+            if state.get(key) != value:
+                raise SystemExit(f"Resume mismatch for {key}: saved={state.get(key)!r}, current={value!r}")
+        if not checkpoint.is_file():
+            raise SystemExit(f"Best model checkpoint is missing: {checkpoint}")
+        model.load_state_dict(state["model_state"])
+        optimizer.load_state_dict(state["optimizer_state"])
+        shuffle_generator.set_state(state["shuffle_state"])
+        random.setstate(state["python_rng_state"])
+        np.random.set_state(state["numpy_rng_state"])
+        torch.set_rng_state(state["torch_rng_state"].cpu())
+        if device.type == "cuda":
+            torch.cuda.set_rng_state_all(state["cuda_rng_states"])
+        best = float(state["best_l1"])
+        start_epoch = int(state["epoch"]) + 1
+        if not log_path.is_file():
+            raise SystemExit(f"Cannot resume without training log: {log_path}")
+        with log_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        logged_epoch = int(rows[-1]["epoch"]) if rows else 0
+        if logged_epoch == start_epoch - 2:
+            with log_path.open("a", encoding="utf-8", newline="") as handle:
+                csv.DictWriter(handle, fieldnames=("epoch", "train_l1", "val_l1")).writerow(state["last_record"])
+        elif logged_epoch != start_epoch - 1:
+            raise SystemExit("Training log and latest checkpoint disagree on the last epoch")
+        if epochs < start_epoch:
+            raise SystemExit(f"Target --epochs={epochs} is below completed epoch {start_epoch - 1}")
+        print(f"Resuming after epoch {start_epoch - 1}; best_L1={best:.6f}", flush=True)
+
+    with log_path.open("a" if args.resume else "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=("epoch", "train_l1", "val_l1"))
-        writer.writeheader()
-        for epoch in range(1, epochs + 1):
+        if not args.resume:
+            writer.writeheader()
+        for epoch in range(start_epoch, epochs + 1):
             train_loss = run_epoch(model, train_loader, criterion, device, optimizer)
             val_loss = (
                 run_epoch(model, val_loader, criterion, device, None)
                 if val_loader is not None else None
             )
-            writer.writerow({
+            record = {
                 "epoch": epoch,
                 "train_l1": f"{train_loss:.8f}",
                 "val_l1": "" if val_loss is None else f"{val_loss:.8f}",
-            })
-            handle.flush()
+            }
             score = train_loss if val_loss is None else val_loss
             if score < best:
                 best = score
-                torch.save({
+                best_state = {
                     "model_state": model.state_dict(),
                     "model_version": MODEL_VERSION,
                     "epoch": epoch,
                     "seed": args.seed,
                     "mode": mode,
                     "best_l1": best,
-                }, checkpoint)
+                }
+                temporary_best = checkpoint.with_name(checkpoint.name + ".tmp")
+                torch.save(best_state, temporary_best)
+                temporary_best.replace(checkpoint)
+            state = {
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "model_version": MODEL_VERSION,
+                "mode": mode,
+                "epoch": epoch,
+                "best_l1": best,
+                "seed": args.seed,
+                "batch_size": args.batch_size,
+                "learning_rate": args.lr,
+                "train_manifest": str(args.train_manifest.resolve()),
+                "val_manifest": None if args.overfit_eight else str(args.val_manifest.resolve()),
+                "shuffle_state": shuffle_generator.get_state(),
+                "python_rng_state": random.getstate(),
+                "numpy_rng_state": np.random.get_state(),
+                "torch_rng_state": torch.get_rng_state(),
+                "cuda_rng_states": torch.cuda.get_rng_state_all() if device.type == "cuda" else None,
+                "last_record": record,
+            }
+            temporary_checkpoint = latest_checkpoint.with_name(latest_checkpoint.name + ".tmp")
+            torch.save(state, temporary_checkpoint)
+            temporary_checkpoint.replace(latest_checkpoint)
+            writer.writerow(record)
+            handle.flush()
             print(
                 f"epoch={epoch:03d} train_L1={train_loss:.6f} "
                 + ("" if val_loss is None else f"val_L1={val_loss:.6f} ")
@@ -174,6 +247,7 @@ def main() -> None:
         "loss": "L1",
         "model_version": MODEL_VERSION,
         "best_checkpoint": str(checkpoint),
+        "latest_checkpoint": str(latest_checkpoint),
         "torch_version": torch.__version__,
     }
     config_path = log_path.with_suffix(".json")
