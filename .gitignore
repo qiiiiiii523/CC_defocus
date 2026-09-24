@@ -23,6 +23,7 @@ outputs/
 checkpoints/
 weights/
 runs/
+results/
 *.pt
 *.pth
 *.ckpt

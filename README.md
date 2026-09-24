@@ -64,3 +64,20 @@ results/{model_name}/summary.json
 ```
 
 模型分支不得复制或修改评价逻辑，应直接调用 `main` 中的公共接口和评价程序。
+
+## DGNO 基线（成员 B）
+
+`baseline/dgno` 分支已固定官方 DGNO 源码版本，并提供适配公共清单与输出格式的推理入口。默认使用 3DHistech 的 DGNO-Face 官方预训练权重。
+
+```bash
+conda env create -f environment/dgno.yml
+conda activate dgno
+pip install mamba-ssm==2.2.2 --no-build-isolation
+cd third_party/DGNO && python setup.py develop --no_cuda_ext && cd ../..
+python scripts/dgno/download_weights.py --variant face
+python scripts/dgno/infer.py --variant face --limit 5
+python scripts/dgno/infer.py --variant face
+python evaluate.py --model-name dgno
+```
+
+完整的数据路径、服务器准备、实验记录和 Cell 变体命令见 [DGNO 基线复现说明](docs/dgno_reproduction.md)。
