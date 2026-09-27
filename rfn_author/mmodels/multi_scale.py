@@ -275,14 +275,18 @@ def build_multi_scale_v8(conf):
     :return:
     '''
 
-    model_scale = build_generator_clear_dense(conf, bottom_ouput=True)
+    # The local-scale branch contributes only its bottleneck features. Build a
+    # bottleneck-only view so its unused decoder is not exposed as trainable
+    # weights (otherwise Keras reports missing gradients for that decoder).
+    model_scale_full = build_generator_clear_dense(conf, bottom_ouput=True)
+    model_scale = Model(model_scale_full.input, model_scale_full.outputs[1])
 
     scale_nums = conf.scale_num
     inputs_scale = Input(shape=(scale_nums, ) + conf.img_shape)
     inputs_scale_info = Input(shape=(scale_nums, 5))
     bottom_features = []
     for ind in range(scale_nums):
-        _, bottom_feature = model_scale(inputs_scale[:, ind, :, :, :])
+        bottom_feature = model_scale(inputs_scale[:, ind, :, :, :])
         bottom_features.append(bottom_feature)
     bottom_feature = tf.concat(bottom_features, axis=-1)
 
