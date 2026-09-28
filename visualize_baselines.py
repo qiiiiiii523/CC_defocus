@@ -1,6 +1,6 @@
 """Create matched six-panel previews for the fixed 3DHistech validation IDs.
 
-Requires Pillow. The first ten records in debug_val.jsonl are used by default.
+Requires Pillow. The first 20 records in debug_val.jsonl are used by default.
 Missing DGNO outputs are shown as clearly labeled placeholders, so the same
 command can be rerun after outputs/dgno is populated.
 """
@@ -29,8 +29,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--count", type=int, default=10,
-                        help="Use the first N frozen validation IDs (default: 10).")
+    parser.add_argument("--count", type=int, default=20,
+                        help="Use the first N frozen validation IDs (default: 20).")
     parser.add_argument("--ids-file", type=Path, default=None,
                         help="Optional UTF-8 file with one fixed sample_id per line; overrides --count.")
     parser.add_argument("--strict", action="store_true",
