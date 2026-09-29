@@ -19,6 +19,9 @@ from engine_jit import train_one_epoch, evaluate
 
 from denoiser import Denoiser
 
+# NOTE: This file remains the official ImageNet class-conditional entry point.
+# For paired cervical-cell A0 restoration, use main_restoration.py instead.
+
 
 def get_args_parser():
     parser = argparse.ArgumentParser('JiT', add_help=False)

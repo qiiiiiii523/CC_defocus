@@ -238,7 +238,7 @@ v=\frac{x-z_t}{1-t},
 \mathcal L_{\mathrm{flow}}=\|v-\hat v\|_2^2.
 \]
 
-基础重建、恒等、PSF和核结构损失尚未接入训练入口。
+当前训练入口使用官方 flow MSE。清晰→清晰恒等训练通过样本混合接入；额外的 L1/SSIM 重建、PSF和核结构损失尚未启用。
 
 ### A0 中的清晰→清晰恒等训练
 
@@ -272,7 +272,7 @@ loss_restore = denoiser(clear=clear_x, blur=blur_y)
 loss_identity_pair = denoiser(clear=clear_x, blur=clear_x)
 ```
 
-因此恒等训练主要属于后续 `dataset_restoration.py` 和 `engine_restoration.py` 的数据混合策略，而不是 `model_jit.py` 的新结构。当前 `denoiser.py` 返回的 flow loss 已经对恒等训练对进行清晰目标监督；是否额外加入 L1/SSIM形式的：
+因此恒等训练属于 `dataset_restoration.py` 的数据混合策略，而不是 `model_jit.py` 的新结构。当前实现通过 `--identity_ratio` 控制比例，默认候选值为 `0.10`。`denoiser.py` 返回的 flow loss 已经对恒等训练对进行清晰目标监督；是否额外加入 L1/SSIM形式的：
 
 \[
 \mathcal L_{\mathrm{id}}
@@ -378,32 +378,43 @@ D:\大创\
 └── JiT/
     ├── model_jit.py              # JiT主干 + A0模糊条件编码器
     ├── denoiser.py               # flow训练目标 + 条件ODE恢复接口
-    ├── main_jit.py               # 仍是官方ImageNet入口，尚未适配A0
-    ├── engine_jit.py             # 仍是官方类别训练/生成循环
+    ├── dataset_restoration.py    # 固定manifest、同步增强和恒等样本混合
+    ├── engine_restoration.py     # A0训练、EMA恢复和统一PNG保存
+    ├── main_restoration.py       # A0专用训练/恢复/公共评价入口
+    ├── main_jit.py               # 保留的官方ImageNet入口，不用于A0
+    ├── engine_jit.py             # 保留的官方类别训练循环，不用于A0
     ├── A0_NETWORK.md             # 简短英文接口说明
     ├── JiT_A0改造说明.md         # 本中文详细说明
     └── util/                     # 官方工具代码
 ```
 
-## 13. 建议的后续代码分层
+## 13. A0训练和固定验证流程
 
-接入完整任务时建议形成：
+### 数据接入
 
-```text
-JiT/
-├── model_jit.py                  # 主干和条件注入
-├── denoiser.py                   # flow路径、终点/速度换算、采样
-├── dataset_restoration.py        # 配对manifest与同步增强
-├── restoration_losses.py         # 重建、恒等、PSF、核和特征损失
-├── psf_operator.py               # 预设核、空间混合与重新模糊
-├── engine_restoration.py         # 配对训练、日志和恢复验证
-├── main_restoration.py           # A0～A6配置与入口
-└── configs/
-    ├── a0.yaml
-    ├── a1.yaml
-    ├── a2.yaml
-    └── a3.yaml
-```
+`A0PairedDataset`直接调用根目录 `common_io.load_manifest/load_pair`：
+
+- 训练清单必须恰好为2,000对，且split为`train`；
+- 验证清单必须恰好为300对，且split为`val`；
+- `--overfit_samples 1..32`可从固定2,000对中确定性抽取小子集，仅用于A0-O检查；
+- 模糊图和清晰图使用同一随机裁剪与水平翻转；
+- 公共 `[0,1]` RGB在数据集边界转换到JiT `[-1,1]`；
+- 恒等训练只从训练清晰图构造；
+- 正式验证不静默缩放或裁剪，尺寸不符合256×256时明确要求先制定分块策略。
+
+### 权重初始化与恢复
+
+- `--pretrained`加载官方JiT权重，并调用安全兼容方法初始化新增条件分支；
+- `--resume`严格加载已训练A0 checkpoint、两套EMA和优化器状态；
+- `--eval_only`必须提供A0 checkpoint，禁止直接把官方ImageNet权重当成恢复结果。
+
+### 输出与评价
+
+- 所有rank按不重叠索引处理固定验证集；
+- 每个样本的初始噪声由`sample_id + --eval_seed`确定，不随batch size或GPU数量变化；
+- 汇总数量必须恰好为300；
+- 预测通过根目录`common_io.save_prediction`写入`outputs/{model_name}/{sample_id}.png`；
+- `--run_metrics`复用根目录`evaluate.py`，不复制PSNR/SSIM/LPIPS实现。
 
 不建议继续强行复用官方 ImageNet `ImageFolder + class labels + FID` 流程，因为本任务的数据、训练调用和评价目标已经不同。
 
@@ -419,23 +430,25 @@ JiT/
 - 加入官方 checkpoint 安全加载方法。
 - 预留 A1～A3 退化接口。
 - 排除本地权重与 FID 文件。
+- 新增固定manifest配对数据集与同步增强。
+- 新增可配置的清晰→清晰恒等样本混合。
+- 新增A0专用训练入口、EMA更新和checkpoint恢复。
+- 新增固定300对恢复、统一PNG保存和公共评价调用。
+- 加入2,000/300数量校验及分布式验证不重复分片。
 
 尚未完成：
 
-- 配对 manifest 数据集。
-- 同步裁剪与增强。
-- A0训练入口和训练日志。
 - 8～32对过拟合检查。
 - 2,000对正式训练。
 - 300对固定验证。
-- A0 清晰→清晰样本混合策略及其有/无对照。
+- A0有/无恒等训练的实际对照结果。
 - 可选的额外重建与 L1/SSIM 恒等辅助损失。
 - A1～A6全部功能。
 - 任何运行、GPU或数值正确性测试。
 
 因此当前准确表述是：
 
-> JiT 的 A0 网络结构和接口改造已经完成；A0 训练与实验尚未完成。
+> JiT 的 A0 网络、配对训练入口和固定验证代码已经完成静态改造；由于本地没有深度学习环境/GPU且本次未执行代码，运行正确性、过拟合能力和正式实验结果尚未验证。
 
 ## 15. Git信息
 
@@ -443,4 +456,59 @@ JiT/
 - 分支：`codex/jit-a0`
 - A0网络改造提交：`d3ff1c4 feat: add JiT A0 blurred-image conditioning`
 - 预训练权重目录：`JiT/pretrained/`，已通过 `.gitignore` 排除。
+
+## 16. 服务器运行入口
+
+以下命令留待有环境和GPU的服务器执行，本地未运行。
+
+单GPU训练示例：
+
+```bash
+cd ~/大创/JiT
+conda activate jit-a0
+python main_restoration.py \
+  --pretrained pretrained/jit-b-16/checkpoint-last.pth \
+  --batch_size 16 \
+  --identity_ratio 0.10 \
+  --amp_bf16 \
+  --run_metrics
+```
+
+正式训练前的16对过拟合检查：
+
+```bash
+python main_restoration.py \
+  --pretrained pretrained/jit-b-16/checkpoint-last.pth \
+  --overfit_samples 16 \
+  --epochs 100 \
+  --batch_size 4 \
+  --identity_ratio 0 \
+  --amp_bf16 \
+  --model_name jit_a0_overfit16
+```
+
+该模式仍先验证原训练清单恰好有2,000对，再抽取固定子集；它的300对恢复结果不属于正式A0指标。首次排查条件分支时先关闭恒等样本混合，避免同时改变两个因素。
+
+双GPU训练示例：
+
+```bash
+torchrun --nproc_per_node=2 main_restoration.py \
+  --pretrained pretrained/jit-b-16/checkpoint-last.pth \
+  --batch_size 16 \
+  --identity_ratio 0.10 \
+  --amp_bf16 \
+  --run_metrics
+```
+
+使用训练后的A0 checkpoint重新生成固定300对并评价：
+
+```bash
+python main_restoration.py \
+  --eval_only \
+  --resume ../checkpoints/jit_a0/checkpoint-last.pth \
+  --amp_bf16 \
+  --run_metrics
+```
+
+正式训练前应先使用`--overfit_samples`完成8～32对过拟合检查。不能跳过该检查直接消耗完整训练预算。
 

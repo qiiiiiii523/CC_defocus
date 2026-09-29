@@ -12,6 +12,9 @@ import util.lr_sched as lr_sched
 import torch_fidelity
 import copy
 
+# NOTE: This file remains the official ImageNet class-conditional engine.
+# A0 paired restoration uses engine_restoration.py.
+
 
 def train_one_epoch(model, model_without_ddp, data_loader, optimizer, device, epoch, log_writer=None, args=None):
     model.train(True)

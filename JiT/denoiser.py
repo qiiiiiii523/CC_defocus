@@ -101,7 +101,7 @@ class Denoiser(nn.Module):
         return loss
 
     @torch.no_grad()
-    def generate(self, blur, degradation=None):
+    def generate(self, blur, degradation=None, noise=None):
         """Restore images from noise while keeping the blur condition fixed."""
         if degradation is not None:
             raise NotImplementedError(
@@ -109,7 +109,18 @@ class Denoiser(nn.Module):
             )
         device = blur.device
         bsz = blur.size(0)
-        z = self.noise_scale * torch.randn(bsz, 3, self.img_size, self.img_size, device=device)
+        if noise is None:
+            noise = torch.randn(
+                bsz, 3, self.img_size, self.img_size, device=device
+            )
+        else:
+            expected_shape = (bsz, 3, self.img_size, self.img_size)
+            if tuple(noise.shape) != expected_shape:
+                raise ValueError(
+                    f"noise must have shape {expected_shape}, got {tuple(noise.shape)}"
+                )
+            noise = noise.to(device=device, dtype=blur.dtype)
+        z = self.noise_scale * noise
         timesteps = torch.linspace(0.0, 1.0, self.steps+1, device=device).view(-1, *([1] * z.ndim)).expand(-1, bsz, -1, -1, -1)
 
         if self.method == "euler":

@@ -1,8 +1,8 @@
 # JiT A0 network adaptation
 
-This branch contains only the network-side adaptation for A0 conditional
-restoration.  It intentionally does not add the paired dataset, training
-entry point, evaluation loop, PSF estimator, PSF loss, or nucleus losses.
+This branch contains the A0 conditional-restoration network plus its dedicated
+paired-manifest training and fixed-validation entry point.  It intentionally
+does not add a PSF estimator, PSF loss, nucleus losses, or A1-A6 features.
 
 ## Network contract
 
@@ -46,3 +46,26 @@ residual, preserving the pretrained JiT behavior at initialization.
 The original class embedding is retained for checkpoint compatibility, but A0
 always selects JiT's unconditional/null class.  The blurred image is the real
 restoration condition and is held fixed throughout ODE sampling.
+
+## A0 task entry point
+
+Use ``main_restoration.py`` rather than the official ImageNet
+``main_jit.py``.  The restoration entry point:
+
+- requires exactly 2,000 records from ``debug_train.jsonl``;
+- requires exactly 300 records from ``debug_val.jsonl``;
+- supports ``--overfit_samples 1..32`` while still validating that the source
+  training manifest is the fixed 2,000-pair manifest;
+- applies synchronized training crop and horizontal flip;
+- optionally converts a configurable fraction of training pairs to
+  clear-to-same-clear identity pairs;
+- initializes from the official JiT checkpoint or strictly resumes an A0
+  checkpoint;
+- writes predictions through the shared ``common_io.save_prediction``;
+- derives validation noise from ``sample_id`` and ``--eval_seed`` so results
+  do not change merely because batch size or distributed world size changes;
+- can invoke the shared root ``evaluate.py`` metrics.
+
+No local execution or GPU validation was performed when this integration was
+written.  Run the small-pair overfit check on the configured GPU server before
+starting the full 2,000-pair experiment.
