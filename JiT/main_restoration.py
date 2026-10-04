@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import math
 import sys
 import time
 from pathlib import Path
@@ -59,6 +60,14 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ema_decay2", default=0.9996, type=float)
     parser.add_argument("--amp_bf16", action="store_true")
     parser.add_argument("--identity_ratio", default=0.10, type=float)
+    parser.add_argument(
+        "--lambda_pix", default=1.0, type=float,
+        help="Charbonnier pixel-loss weight; 0 reproduces the flow-only objective.",
+    )
+    parser.add_argument(
+        "--charbonnier_eps", default=1e-3, type=float,
+        help="Positive Charbonnier smoothing constant on the RGB [0,1] scale.",
+    )
     parser.add_argument(
         "--overfit_samples",
         default=0,
@@ -201,6 +210,10 @@ def _run_metrics_and_sync(args) -> None:
 
 
 def main(args) -> None:
+    if not math.isfinite(args.lambda_pix) or args.lambda_pix < 0:
+        raise ValueError("--lambda_pix must be finite and non-negative")
+    if not math.isfinite(args.charbonnier_eps) or args.charbonnier_eps <= 0:
+        raise ValueError("--charbonnier_eps must be finite and positive")
     misc.init_distributed_mode(args)
     if args.device != "cuda":
         raise ValueError("A0 training entry is designed for the GPU server; use --device cuda")
@@ -369,6 +382,10 @@ def main(args) -> None:
         print("A0-O overfit mode is active; results are not formal A0 metrics")
     print(f"A0 fixed validation pairs: {len(val_dataset)}")
     print(f"Identity-pair probability: {args.identity_ratio}")
+    print(
+        f"A0 objective: flow + {args.lambda_pix:g} * Charbonnier; "
+        f"eps={args.charbonnier_eps:g}; pixel error measured on RGB [0,1]"
+    )
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:

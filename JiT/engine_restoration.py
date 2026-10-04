@@ -54,11 +54,17 @@ def train_one_epoch_a0(
             dtype=torch.bfloat16,
             enabled=amp_enabled,
         ):
-            loss = model(clear, blur, degradation=None)
+            losses = model(
+                clear, blur, degradation=None, return_loss_components=True
+            )
+            loss = losses["loss"]
 
-        loss_value = float(loss.item())
-        if not math.isfinite(loss_value):
-            raise RuntimeError(f"Non-finite A0 loss at epoch={epoch}, step={step}: {loss_value}")
+        loss_values = {name: float(value.detach().item()) for name, value in losses.items()}
+        for name, value in loss_values.items():
+            if not math.isfinite(value):
+                raise RuntimeError(
+                    f"Non-finite A0 {name} at epoch={epoch}, step={step}: {value}"
+                )
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -70,14 +76,17 @@ def train_one_epoch_a0(
         model_without_ddp.update_ema()
 
         metric_logger.update(
-            loss=loss_value,
+            **loss_values,
             identity_fraction=identity_fraction,
             lr=optimizer.param_groups[0]["lr"],
         )
-        reduced_loss = misc.all_reduce_mean(loss_value)
+        reduced_losses = {
+            name: misc.all_reduce_mean(value) for name, value in loss_values.items()
+        }
         if log_writer is not None and step % args.log_freq == 0:
             epoch_1000x = int((step / len(data_loader) + epoch) * 1000)
-            log_writer.add_scalar("a0/train_loss", reduced_loss, epoch_1000x)
+            for name, value in reduced_losses.items():
+                log_writer.add_scalar(f"a0/train_{name}", value, epoch_1000x)
             log_writer.add_scalar(
                 "a0/identity_fraction", identity_fraction, epoch_1000x
             )

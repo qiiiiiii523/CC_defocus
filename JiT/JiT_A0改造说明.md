@@ -512,3 +512,63 @@ python main_restoration.py \
 
 正式训练前应先使用`--overfit_samples`完成8～32对过拟合检查。不能跳过该检查直接消耗完整训练预算。
 
+## 17. A0 增加 Charbonnier 像素损失（2026-10-04）
+
+当前训练目标为：
+
+\[
+\mathcal L=\mathcal L_{\mathrm{flow}}+\lambda_{\mathrm{pix}}\mathcal L_{\mathrm{Charb}}
+\]
+
+它对应老师方案中的“Flow 主损失＋像素损失（L1 或 Charbonnier）”。
+保留原有 flow 路径、网络结构、预训练初始化、条件注入、EMA 和推理方式。
+PSF、SSIM、核掩膜、细胞学特征损失尚未加入。
+
+新增 `restoration_losses.py` 负责像素误差。JiT 内部输入和预测使用 `[-1,1]`，
+Charbonnier 在公共 RGB `[0,1]` 尺度上计算：
+
+\[
+d_i=(\hat x_i-x_i)/2,\qquad
+\mathcal L_{\mathrm{Charb}}=\frac1N\sum_i\sqrt{d_i^2+\epsilon^2}
+\]
+
+预测不进行 clamp，保证越界预测仍能得到梯度；差值、平方、开方与平均使用 FP32。
+监督对象是随机时间 t 下预测的清晰终点 `x_pred`，不是带噪状态 `z_t`，
+也不需要在每个训练 batch 额外跑完整 ODE。没有像 flow 那样的时间权重。
+Charbonnier 在预测完全正确时仍有 epsilon 的常数底值，这不会改变梯度方向。
+
+参数：
+
+- `--lambda_pix 1.0`：默认起始权重，后续依据验证结果和各项量级调节，尚非最优结论。
+- `--lambda_pix 0`：复现之前的 flow-only 目标。
+- `--charbonnier_eps 1e-3`：RGB `[0,1]` 尺度上的平滑常数，必须为正。
+- `--identity_ratio 0.10`：保持约 10% 清晰→清晰样本；这是采样概率，不是损失权重。
+
+终端分别输出 `loss`、`loss_flow`、`loss_charb`、`loss_pix_weighted`。
+TensorBoard 标签分别为 `a0/train_loss`、`a0/train_loss_flow`、
+`a0/train_loss_charb`、`a0/train_loss_pix_weighted`。
+旧 loss 是单独 flow，现在的总 loss 包含两项，跨实验应单独比较 flow 与验证指标。
+
+此次新增损失没有增加模型参数，因此官方权重和旧 A0 权重的模型键仍兼容。
+为比较损失的贡献，建议从相同官方权重重新启动新实验，使用新输出目录；
+不要用已训练完 300 轮的 checkpoint 配合 `--resume --epochs 300`，它没有剩余训练轮数。
+
+服务器短实验示例（不覆盖原实验）：
+
+```bash
+cd "/home/qht/大创/CC_defocus/JiT"
+CUDA_VISIBLE_DEVICES=0 python -u main_restoration.py \
+  --pretrained pretrained/jit-b-16/checkpoint-last.pth \
+  --epochs 100 --batch_size 8 \
+  --lr 1e-5 --warmup_epochs 5 --lr_schedule cosine --min_lr 1e-6 \
+  --identity_ratio 0.10 --lambda_pix 1.0 --charbonnier_eps 1e-3 \
+  --amp_bf16 --seed 0 --eval_seed 0 --num_workers 4 \
+  --eval_freq 20 --save_last_freq 10 \
+  --model_name jit_a0_id10_charb_e100 \
+  --output_dir ../checkpoints/jit_a0_id10_charb_e100 --run_metrics
+```
+
+100 轮是观察趋势的短实验，不能直接当成与旧 300 轮等预算的正式消融结论。
+当前周期验证使用同一模型输出目录，后续验证会覆盖上一轮的预测和汇总；
+需要保留各次汇总时应及时归档。训练代码本次不改变 checkpoint 保存策略。
+

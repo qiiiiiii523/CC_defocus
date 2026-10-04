@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from model_jit import JiT_models
+from restoration_losses import charbonnier_loss
 
 
 class Denoiser(nn.Module):
@@ -24,6 +25,9 @@ class Denoiser(nn.Module):
         self.P_std = args.P_std
         self.t_eps = args.t_eps
         self.noise_scale = args.noise_scale
+        # Legacy callers without these options keep the original flow loss.
+        self.lambda_pix = getattr(args, "lambda_pix", 0.0)
+        self.charbonnier_eps = getattr(args, "charbonnier_eps", 1e-3)
 
         # ema
         self.ema_decay1 = args.ema_decay1
@@ -70,8 +74,12 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, clear, blur, degradation=None):
-        """Compute the A0 flow-matching loss for a paired clear/blur batch."""
+    def forward(self, clear, blur, degradation=None, return_loss_components=False):
+        """Compute flow + weighted pixel loss on the same sampled endpoint.
+
+        Default return remains a scalar for existing callers. The training
+        engine requests components for separate logging.
+        """
         if clear.shape != blur.shape:
             raise ValueError(
                 f"clear and blur must have identical shapes; got "
@@ -94,10 +102,19 @@ class Denoiser(nn.Module):
         x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=None)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
 
-        # l2 loss
-        loss = (v - v_pred) ** 2
-        loss = loss.mean(dim=(1, 2, 3)).mean()
-
+        # Preserve the official flow objective and add unweighted-in-time
+        # RGB pixel supervision of x_pred (not the noisy state z).
+        loss_flow = ((v - v_pred) ** 2).mean(dim=(1, 2, 3)).mean()
+        loss_charb = charbonnier_loss(x_pred, clear, eps=self.charbonnier_eps)
+        loss_pix_weighted = self.lambda_pix * loss_charb
+        loss = loss_flow + loss_pix_weighted
+        if return_loss_components:
+            return {
+                "loss": loss,
+                "loss_flow": loss_flow,
+                "loss_charb": loss_charb,
+                "loss_pix_weighted": loss_pix_weighted,
+            }
         return loss
 
     @torch.no_grad()

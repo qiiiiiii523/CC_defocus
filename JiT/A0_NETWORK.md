@@ -66,6 +66,26 @@ Use ``main_restoration.py`` rather than the official ImageNet
   do not change merely because batch size or distributed world size changes;
 - can invoke the shared root ``evaluate.py`` metrics.
 
-No local execution or GPU validation was performed when this integration was
+No GPU validation was performed when this integration was
 written.  Run the small-pair overfit check on the configured GPU server before
 starting the full 2,000-pair experiment.
+
+## Charbonnier pixel supervision
+
+`main_restoration.py` now defaults to `--lambda_pix 1.0` and
+`--charbonnier_eps 1e-3`. The objective is
+`loss = loss_flow + lambda_pix * loss_charb`.
+`--lambda_pix 0` selects the previous flow-only objective.
+
+`restoration_losses.py` compares the sampled clean-endpoint prediction with
+the paired clear target. Inputs remain on JiT's `[-1,1]` scale; the loss uses
+half their difference to measure error on RGB `[0,1]`. Predictions are not
+clamped for the loss. The Charbonnier square root and reduction use FP32,
+including under BF16 autocast. No extra ODE rollout is needed for training.
+
+The engine logs total loss, flow loss, raw Charbonnier loss and weighted pixel
+loss to the console and TensorBoard. Both identity and ordinary pairs use the
+same objective. The weight of 1 is a starting setting, not a validated optimum.
+Network parameters and checkpoint keys have not changed. Use a new run name
+and initialize from the official checkpoint for a controlled comparison;
+resuming an old completed run retains its optimizer and epoch count.
