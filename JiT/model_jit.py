@@ -381,7 +381,8 @@ class JiT(nn.Module):
     def initialize_blur_condition_from_state_embedder(self):
         """Initialize the new RGB condition patch embedder from x_embedder.
 
-        Call this once after loading an official JiT checkpoint.  It copies
+        Call this once after loading an official JiT checkpoint, or after
+        constructing a randomly initialized scratch model. It copies
         values rather than sharing parameters, so the two encoders can adapt
         independently during restoration fine-tuning.
         """

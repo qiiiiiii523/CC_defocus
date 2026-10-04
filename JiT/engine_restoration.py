@@ -94,6 +94,11 @@ def train_one_epoch_a0(
                 "a0/learning_rate", optimizer.param_groups[0]["lr"], epoch_1000x
             )
 
+    gate = float(model_without_ddp.net.blur_condition_encoder.gate.detach().item())
+    print(f"A0 blur condition gate at epoch {epoch}: {gate:.6f}")
+    if log_writer is not None:
+        log_writer.add_scalar("a0/condition_gate", gate, epoch)
+
 
 @torch.no_grad()
 def restore_fixed_validation(

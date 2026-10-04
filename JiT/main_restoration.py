@@ -1,4 +1,4 @@
-"""Train and restore with JiT A0 on the fixed 3DHistech manifests.
+"""Train and restore with JiT A0 on paired 3DHistech manifests.
 
 This is intentionally separate from ``main_jit.py``, which remains the
 official ImageNet class-conditional entry point.
@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
+import json
 import math
 import sys
 import time
@@ -22,6 +24,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 JIT_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = JIT_ROOT.parent
+if str(JIT_ROOT) not in sys.path:
+    sys.path.insert(0, str(JIT_ROOT))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -73,7 +77,7 @@ def get_args_parser() -> argparse.ArgumentParser:
         default=0,
         type=int,
         help=(
-            "Use a deterministic subset of the fixed 2,000-pair training set "
+            "Use a deterministic subset of the training manifest "
             "for the A0-O overfit check; 0 uses all pairs, otherwise use 1-32."
         ),
     )
@@ -93,7 +97,7 @@ def get_args_parser() -> argparse.ArgumentParser:
         "--eval_freq",
         default=0,
         type=int,
-        help="Restore all 300 validation pairs every N epochs; 0 means final epoch only.",
+        help="Restore the entire validation manifest every N epochs; 0 means final epoch only.",
     )
     parser.add_argument("--eval_batch_size", default=4, type=int)
     parser.add_argument(
@@ -106,6 +110,18 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run_metrics", action="store_true")
 
     # Fixed manifests and output paths.
+    parser.add_argument(
+        "--expected_train_pairs", default=2000, type=int,
+        help="Expected full training manifest size before subsetting; 0 accepts any nonempty size.",
+    )
+    parser.add_argument(
+        "--expected_val_pairs", default=300, type=int,
+        help="Expected validation manifest size; 0 accepts any nonempty size.",
+    )
+    parser.add_argument(
+        "--init_mode", default=None, choices=("pretrained", "scratch"),
+        help="Fresh runs default to pretrained; resumes inherit the saved initialization mode.",
+    )
     parser.add_argument(
         "--train_manifest",
         type=Path,
@@ -161,6 +177,56 @@ def _checkpoint_file(path: Path | None) -> Path | None:
     return path / "checkpoint-last.pth" if path.is_dir() else path
 
 
+def _resolve_init_mode(requested, checkpoint=None):
+    saved_args = checkpoint.get("args") if checkpoint is not None else None
+    saved = (saved_args.get("init_mode") if isinstance(saved_args, dict)
+             else getattr(saved_args, "init_mode", None))
+    if checkpoint is not None:
+        # Legacy A0 checkpoints predate scratch support and used official weights.
+        saved = saved or "pretrained"
+        if requested is not None and requested != saved:
+            raise ValueError(f"Resume init_mode mismatch: requested {requested}, saved {saved}")
+        return saved
+    return requested or "pretrained"
+
+
+def _initialize_fresh_model(model, args):
+    if args.init_mode == "scratch":
+        # Denoiser construction already applies the official random initialization.
+        # Copy values, not parameters: the RGB branches remain independently trainable.
+        model.net.initialize_blur_condition_from_state_embedder()
+        print("Initialized A0 from scratch; no official checkpoint was read")
+    else:
+        if not args.pretrained.is_file():
+            raise FileNotFoundError(f"Official JiT checkpoint does not exist: {args.pretrained}")
+        checkpoint = torch.load(args.pretrained, map_location="cpu", weights_only=False)
+        model.load_official_state_dict(checkpoint["model"])
+        print(f"Initialized A0 from official JiT checkpoint: {args.pretrained}")
+
+
+def _check_pair_counts(actual, expected, split):
+    if expected < 0:
+        raise ValueError(f"Expected {split} pair count must be non-negative")
+    if actual < 1 or (expected and actual != expected):
+        raise ValueError(f"{split} manifest has {actual} pairs; expected {expected or 'a nonempty manifest'}")
+
+
+def _check_train_val_overlap(train_records, val_records):
+    # This catches exact duplicate IDs or reused images, not adjacent crops/slide leakage.
+    ids = {record.sample_id for record in train_records}
+    paths = {path.resolve() for record in train_records
+             for path in (record.blur_path, record.clear_path)}
+    for record in val_records:
+        if record.sample_id in ids or any(
+            path.resolve() in paths for path in (record.blur_path, record.clear_path)
+        ):
+            raise ValueError(f"Train/validation overlap: {record.sample_id}")
+
+
+def _manifest_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def _initialize_ema(model_without_ddp) -> None:
     model_without_ddp.ema_params1 = [
         parameter.detach().clone() for parameter in model_without_ddp.parameters()
@@ -214,6 +280,20 @@ def _run_metrics_and_sync(args) -> None:
 
 
 def main(args) -> None:
+    resume_path = _checkpoint_file(args.resume)
+    if args.eval_only and resume_path is None:
+        raise ValueError("--eval_only requires --resume with a trained A0 checkpoint")
+    resume_checkpoint = None
+    if resume_path is not None:
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"A0 resume checkpoint does not exist: {resume_path}")
+        resume_checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
+    args.init_mode = _resolve_init_mode(args.init_mode, resume_checkpoint)
+    if args.init_mode == "scratch":
+        if args.model_name == "jit_a0":
+            args.model_name = "jit_a0_scratch"
+        if args.output_dir == PROJECT_ROOT / "checkpoints" / "jit_a0":
+            args.output_dir = PROJECT_ROOT / "checkpoints" / "jit_a0_scratch"
     if not math.isfinite(args.lambda_pix) or args.lambda_pix < 0:
         raise ValueError("--lambda_pix must be finite and non-negative")
     if not math.isfinite(args.charbonnier_eps) or args.charbonnier_eps <= 0:
@@ -252,14 +332,12 @@ def main(args) -> None:
             identity_ratio=args.identity_ratio,
             root=PROJECT_ROOT,
         )
-        if len(full_train_dataset) != 2000:
-            raise ValueError(
-                "The fixed training manifest must contain exactly 2000 pairs "
-                f"before any overfit subset is selected; got {len(full_train_dataset)}"
-            )
+        _check_pair_counts(len(full_train_dataset), args.expected_train_pairs, "train")
         if args.overfit_samples < 0 or args.overfit_samples > 32:
             raise ValueError("--overfit_samples must be 0 or an integer from 1 to 32")
         if args.overfit_samples:
+            if args.overfit_samples > len(full_train_dataset):
+                raise ValueError("--overfit_samples exceeds training manifest size")
             subset_indices = np.linspace(
                 0,
                 len(full_train_dataset) - 1,
@@ -287,6 +365,8 @@ def main(args) -> None:
             pin_memory=args.pin_mem,
             drop_last=not bool(args.overfit_samples),
         )
+        if len(train_loader) == 0:
+            raise ValueError("Training loader is empty; reduce batch size or use overfit mode")
 
     val_dataset = A0PairedDataset(
         args.val_manifest,
@@ -296,13 +376,12 @@ def main(args) -> None:
         identity_ratio=0.0,
         root=PROJECT_ROOT,
     )
-    if len(val_dataset) != 300:
-        raise ValueError(
-            f"Fixed validation manifest must contain 300 pairs, got {len(val_dataset)}"
-        )
+    _check_pair_counts(len(val_dataset), args.expected_val_pairs, "val")
+    if not args.eval_only:
+        _check_train_val_overlap(full_train_dataset.records, val_dataset.records)
     if misc.get_world_size() > len(val_dataset):
         raise ValueError(
-            f"world_size={misc.get_world_size()} exceeds the 300 validation samples"
+            f"world_size={misc.get_world_size()} exceeds {len(val_dataset)} validation samples"
         )
     val_loader = DataLoader(
         _validation_subset(val_dataset),
@@ -314,25 +393,11 @@ def main(args) -> None:
     )
 
     model = Denoiser(args)
-    resume_path = _checkpoint_file(args.resume)
-    resume_checkpoint = None
-    if resume_path is not None:
-        if not resume_path.is_file():
-            raise FileNotFoundError(f"A0 resume checkpoint does not exist: {resume_path}")
-        resume_checkpoint = torch.load(
-            resume_path, map_location="cpu", weights_only=False
-        )
+    if resume_checkpoint is not None:
         model.load_state_dict(resume_checkpoint["model"], strict=True)
         print(f"Loaded A0 model checkpoint: {resume_path}")
     else:
-        if not args.pretrained.is_file():
-            raise FileNotFoundError(f"Official JiT checkpoint does not exist: {args.pretrained}")
-        official_checkpoint = torch.load(
-            args.pretrained, map_location="cpu", weights_only=False
-        )
-        model.load_official_state_dict(official_checkpoint["model"])
-        del official_checkpoint
-        print(f"Initialized A0 from official JiT checkpoint: {args.pretrained}")
+        _initialize_fresh_model(model, args)
 
     model.to(device)
     if args.distributed:
@@ -347,7 +412,10 @@ def main(args) -> None:
     if not args.eval_only:
         effective_batch_size = args.batch_size * misc.get_world_size()
         if args.lr is None:
-            args.lr = args.blr * effective_batch_size / 256
+            args.lr = (1e-4 if args.init_mode == "scratch"
+                       else args.blr * effective_batch_size / 256)
+            if args.init_mode == "scratch":
+                print("Scratch initial LR defaults to 1e-4; this is a trial setting, not a validated optimum")
         param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
         optimizer = torch.optim.AdamW(
             param_groups, lr=args.lr, betas=(0.9, 0.95)
@@ -360,6 +428,20 @@ def main(args) -> None:
                 raise KeyError("A0 resume checkpoint is missing optimizer or epoch")
             optimizer.load_state_dict(resume_checkpoint["optimizer"])
             args.start_epoch = int(resume_checkpoint["epoch"]) + 1
+            saved_args = resume_checkpoint.get("args")
+            for field in ("lambda_pix", "charbonnier_eps", "identity_ratio",
+                          "ema_decay1", "ema_decay2"):
+                saved_value = (saved_args.get(field) if isinstance(saved_args, dict)
+                               else getattr(saved_args, field, None))
+                if saved_value is not None and saved_value != getattr(args, field):
+                    raise ValueError(f"Resume {field} mismatch: saved {saved_value}; repeat the original configuration")
+            args.global_step = (saved_args.get("global_step", args.start_epoch * len(train_loader))
+                                if isinstance(saved_args, dict) else
+                                getattr(saved_args, "global_step", args.start_epoch * len(train_loader)))
+            previous_hash = (saved_args.get("train_manifest_sha256") if isinstance(saved_args, dict)
+                             else getattr(saved_args, "train_manifest_sha256", None))
+            if previous_hash and previous_hash != _manifest_sha256(args.train_manifest):
+                raise ValueError("Resume training manifest differs; do not change training data mid-run")
         del resume_checkpoint
     else:
         _initialize_ema(model_without_ddp)
@@ -374,17 +456,30 @@ def main(args) -> None:
             model_name=args.model_name,
             output_root=args.prediction_root,
             weight_source=args.eval_weights,
-            expected_total=300,
+            expected_total=len(val_dataset),
             amp_bf16=args.amp_bf16,
             eval_seed=args.eval_seed,
         )
         _run_metrics_and_sync(args)
         return
 
+    args.global_step = getattr(args, "global_step", 0)
+    args.train_manifest_sha256 = _manifest_sha256(args.train_manifest)
+    args.val_manifest_sha256 = _manifest_sha256(args.val_manifest)
+    if misc.is_main_process():
+        report = {key: str(value) if isinstance(value, Path) else value
+                  for key, value in vars(args).items()}
+        report.update(full_train_pairs=len(full_train_dataset),
+                      effective_train_pairs=len(train_dataset), val_pairs=len(val_dataset),
+                      condition_init="copy_state_patch_embedder", gate_init=0,
+                      initialization_source=str(resume_path) if resume_path else args.init_mode)
+        (args.output_dir / "run_config.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"A0 initialization mode: {args.init_mode}; all trainable parameters are optimized")
     print(f"A0 effective train pairs: {len(train_dataset)}")
     if args.overfit_samples:
         print("A0-O overfit mode is active; results are not formal A0 metrics")
-    print(f"A0 fixed validation pairs: {len(val_dataset)}")
+    print(f"A0 validation pairs: {len(val_dataset)}")
     print(f"Identity-pair probability: {args.identity_ratio}")
     print(
         f"A0 objective: flow + {args.lambda_pix:g} * Charbonnier; "
@@ -404,6 +499,8 @@ def main(args) -> None:
             log_writer=log_writer,
             args=args,
         )
+        args.global_step += len(train_loader)
+        print(f"A0 global_step: {args.global_step}")
 
         should_save = epoch % args.save_last_freq == 0 or epoch + 1 == args.epochs
         if should_save:
@@ -426,7 +523,7 @@ def main(args) -> None:
                 model_name=args.model_name,
                 output_root=args.prediction_root,
                 weight_source=args.eval_weights,
-                expected_total=300,
+                expected_total=len(val_dataset),
                 amp_bf16=args.amp_bf16,
                 eval_seed=args.eval_seed,
             )
