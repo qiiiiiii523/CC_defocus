@@ -89,3 +89,25 @@ same objective. The weight of 1 is a starting setting, not a validated optimum.
 Network parameters and checkpoint keys have not changed. Use a new run name
 and initialize from the official checkpoint for a controlled comparison;
 resuming an old completed run retains its optimizer and epoch count.
+
+## Compare ordinary and EMA weights without retraining
+
+`--eval_weights model|ema1|ema2` chooses weights for restoration. The default
+remains `ema1`, preserving previous behavior. `model` is the ordinary trained
+weight set, not the official ImageNet checkpoint. This does not change the
+architecture, objective, training updates or checkpoint contents.
+
+Transfer `main_restoration.py`, `engine_restoration.py` and
+`evaluate_a0_weights.sh` to the server's JiT directory. Activate `jit-a0`, then
+run `bash evaluate_a0_weights.sh 0`. The script sequentially restores the same
+fixed 300 pairs with ordinary weights, EMA1 and EMA2 from
+`../checkpoints/jit_a0_id10_charb_e100/checkpoint-last.pth`. An alternative
+checkpoint can be passed as the second argument. All runs use identical
+per-sample initial noise, Heun sampling with 50 steps and separate names.
+
+Outputs and metric results have `_model`, `_ema1`, `_ema2` suffixes. Logs are
+stored in `../reports/<experiment>_weight_compare/`. Existing experiment
+outputs and checkpoint files are not overwritten. Re-running this comparison
+will overwrite its own comparison outputs and logs. Compare the same sample
+ID across directories and inspect aggregate metrics; EMA-only degradation
+suggests averaging lag, but does not alone prove the added loss is correct.

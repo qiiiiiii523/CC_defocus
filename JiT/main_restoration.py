@@ -86,6 +86,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval_max", default=1.0, type=float)
     parser.add_argument("--eval_only", action="store_true")
     parser.add_argument(
+        "--eval_weights", default="ema1", choices=("model", "ema1", "ema2"),
+        help="Weight source for restoration only; does not change training or checkpoints.",
+    )
+    parser.add_argument(
         "--eval_freq",
         default=0,
         type=int,
@@ -369,7 +373,7 @@ def main(args) -> None:
             device,
             model_name=args.model_name,
             output_root=args.prediction_root,
-            use_ema=True,
+            weight_source=args.eval_weights,
             expected_total=300,
             amp_bf16=args.amp_bf16,
             eval_seed=args.eval_seed,
@@ -421,7 +425,7 @@ def main(args) -> None:
                 device,
                 model_name=args.model_name,
                 output_root=args.prediction_root,
-                use_ema=True,
+                weight_source=args.eval_weights,
                 expected_total=300,
                 amp_bf16=args.amp_bf16,
                 eval_seed=args.eval_seed,

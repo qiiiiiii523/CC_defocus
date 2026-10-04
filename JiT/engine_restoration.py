@@ -104,21 +104,33 @@ def restore_fixed_validation(
     model_name: str,
     output_root: str | Path,
     use_ema: bool = True,
+    weight_source: str | None = None,
     expected_total: int = 300,
     amp_bf16: bool = False,
     eval_seed: int = 0,
 ) -> int:
     """Generate and save this rank's non-overlapping validation shard."""
+    source = weight_source if weight_source is not None else ("ema1" if use_ema else "model")
+    if source not in ("model", "ema1", "ema2"):
+        raise ValueError(f"Unknown evaluation weight source: {source}")
+    print(f"A0 evaluation weights: {source}")
     original_parameters = None
-    if use_ema:
-        if model_without_ddp.ema_params1 is None:
-            raise RuntimeError("EMA parameters are not initialized")
+    if source != "model":
+        ema_parameters = getattr(model_without_ddp, f"ema_params{source[-1]}", None)
+        parameters = list(model_without_ddp.parameters())
+        if ema_parameters is None:
+            raise RuntimeError(f"{source} parameters are not initialized")
+        if len(parameters) != len(ema_parameters) or any(
+            parameter.shape != ema_parameter.shape
+            for parameter, ema_parameter in zip(parameters, ema_parameters)
+        ):
+            raise RuntimeError(f"{source} parameters do not match the model")
         original_parameters = [
             parameter.detach().clone()
-            for parameter in model_without_ddp.parameters()
+            for parameter in parameters
         ]
         for parameter, ema_parameter in zip(
-            model_without_ddp.parameters(), model_without_ddp.ema_params1
+            parameters, ema_parameters
         ):
             parameter.copy_(ema_parameter)
 
