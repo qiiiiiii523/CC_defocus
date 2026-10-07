@@ -40,6 +40,15 @@ def get_args_parser() -> argparse.ArgumentParser:
 
     # Architecture and official JiT flow settings.
     parser.add_argument("--model", default="JiT-B/16")
+    parser.add_argument("--degradation_mode", default=None,
+                        choices=("none", "fixed", "predicted"),
+                        help="Fresh runs default to none; resumes inherit the saved mode.")
+    parser.add_argument("--degradation_checkpoint", type=Path, default=None,
+                        help="C's frozen estimator; required for fresh predicted runs.")
+    parser.add_argument("--a0_checkpoint", type=Path, default=None,
+                        help="Initialize from A0 without restoring its optimizer/epoch/EMA.")
+    parser.add_argument("--a0_weights", default="ema2", choices=("model", "ema1", "ema2"),
+                        help="Common training starting weights for all three comparison arms.")
     parser.add_argument("--img_size", default=256, type=int)
     parser.add_argument("--class_num", default=1000, type=int)
     parser.add_argument("--attn_dropout", default=0.0, type=float)
@@ -177,6 +186,18 @@ def _checkpoint_file(path: Path | None) -> Path | None:
     return path / "checkpoint-last.pth" if path.is_dir() else path
 
 
+def _saved_argument(checkpoint, name, default=None):
+    saved = checkpoint.get("args") if checkpoint is not None else None
+    return saved.get(name, default) if isinstance(saved, dict) else getattr(saved, name, default)
+
+
+def _resolve_degradation_mode(requested, checkpoint=None):
+    saved = _saved_argument(checkpoint, "degradation_mode", "none") or "none"
+    if checkpoint is not None and requested is not None and requested != saved:
+        raise ValueError(f"Resume degradation_mode mismatch: saved {saved}, requested {requested}")
+    return saved if checkpoint is not None else (requested or "none")
+
+
 def _resolve_init_mode(requested, checkpoint=None):
     saved_args = checkpoint.get("args") if checkpoint is not None else None
     saved = (saved_args.get("init_mode") if isinstance(saved_args, dict)
@@ -224,7 +245,11 @@ def _check_train_val_overlap(train_records, val_records):
 
 
 def _manifest_sha256(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _initialize_ema(model_without_ddp) -> None:
@@ -280,6 +305,10 @@ def _run_metrics_and_sync(args) -> None:
 
 
 def main(args) -> None:
+    if args.resume is not None and args.a0_checkpoint is not None:
+        raise ValueError("--resume and --a0_checkpoint are mutually exclusive")
+    if args.eval_only and args.a0_checkpoint is not None:
+        raise ValueError("--a0_checkpoint starts a new training experiment; evaluate via --resume")
     resume_path = _checkpoint_file(args.resume)
     if args.eval_only and resume_path is None:
         raise ValueError("--eval_only requires --resume with a trained A0 checkpoint")
@@ -288,7 +317,50 @@ def main(args) -> None:
         if not resume_path.is_file():
             raise FileNotFoundError(f"A0 resume checkpoint does not exist: {resume_path}")
         resume_checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
-    args.init_mode = _resolve_init_mode(args.init_mode, resume_checkpoint)
+    a0_path = _checkpoint_file(args.a0_checkpoint)
+    a0_checkpoint = None
+    if a0_path is not None:
+        if args.start_epoch != 0:
+            raise ValueError("A0-initialized new experiments must start at epoch 0")
+        if args.output_dir.resolve() == a0_path.parent.resolve():
+            raise ValueError("Do not overwrite the A0 starting checkpoint directory")
+        if not a0_path.is_file():
+            raise FileNotFoundError(f"A0 starting checkpoint does not exist: {a0_path}")
+        a0_checkpoint = torch.load(a0_path, map_location="cpu", weights_only=False)
+        # Architecture/flow definitions must match the archived A0 starting model.
+        for field in ("model", "img_size", "class_num", "P_mean", "P_std", "noise_scale", "t_eps"):
+            saved = _saved_argument(a0_checkpoint, field)
+            if saved is not None and saved != getattr(args, field):
+                raise ValueError(f"A0 starting {field} mismatch: saved {saved}, requested {getattr(args, field)}")
+    args.degradation_mode = _resolve_degradation_mode(args.degradation_mode, resume_checkpoint)
+    args.init_mode = _resolve_init_mode(
+        args.init_mode, resume_checkpoint if resume_checkpoint is not None else a0_checkpoint
+    )
+    args.degradation_checkpoint_sha256 = _saved_argument(
+        resume_checkpoint, "degradation_checkpoint_sha256"
+    )
+    if args.degradation_checkpoint is not None:
+        if resume_checkpoint is not None:
+            raise ValueError("A1 resume uses the embedded estimator; omit --degradation_checkpoint")
+        if args.degradation_mode != "predicted":
+            raise ValueError("--degradation_checkpoint requires predicted mode")
+        if not args.degradation_checkpoint.is_file():
+            raise FileNotFoundError(args.degradation_checkpoint)
+        args.degradation_checkpoint_sha256 = _manifest_sha256(args.degradation_checkpoint)
+    elif args.degradation_mode == "predicted" and resume_checkpoint is None:
+        raise ValueError("Fresh predicted mode requires --degradation_checkpoint")
+    if resume_checkpoint is not None and args.degradation_mode == "predicted":
+        args.degradation_checkpoint = _saved_argument(resume_checkpoint, "degradation_checkpoint")
+    if args.degradation_mode != "none":
+        if args.model_name == "jit_a0":
+            args.model_name = f"jit_a1_{args.degradation_mode}"
+        if args.output_dir == PROJECT_ROOT / "checkpoints" / "jit_a0":
+            args.output_dir = PROJECT_ROOT / "checkpoints" / args.model_name
+    elif a0_path is not None:
+        if args.model_name == "jit_a0":
+            args.model_name = "jit_a0_continued"
+        if args.output_dir == PROJECT_ROOT / "checkpoints" / "jit_a0":
+            args.output_dir = PROJECT_ROOT / "checkpoints" / args.model_name
     if args.init_mode == "scratch":
         if args.model_name == "jit_a0":
             args.model_name = "jit_a0_scratch"
@@ -396,8 +468,17 @@ def main(args) -> None:
     if resume_checkpoint is not None:
         model.load_state_dict(resume_checkpoint["model"], strict=True)
         print(f"Loaded A0 model checkpoint: {resume_path}")
+    elif a0_checkpoint is not None:
+        source_key = {"model": "model", "ema1": "model_ema1", "ema2": "model_ema2"}[args.a0_weights]
+        model.load_a0_state_dict(a0_checkpoint[source_key])
+        print(f"Initialized from A0 {source_key}: {a0_path}; new optimizer, EMA and epoch schedule")
     else:
         _initialize_fresh_model(model, args)
+    if args.degradation_mode == "predicted" and resume_checkpoint is None:
+        model.load_degradation_estimator(args.degradation_checkpoint)
+    if a0_checkpoint is not None:
+        args.a0_checkpoint_sha256 = _manifest_sha256(a0_path)
+        del a0_checkpoint
 
     model.to(device)
     if args.distributed:
@@ -472,10 +553,11 @@ def main(args) -> None:
         report.update(full_train_pairs=len(full_train_dataset),
                       effective_train_pairs=len(train_dataset), val_pairs=len(val_dataset),
                       condition_init="copy_state_patch_embedder", gate_init=0,
-                      initialization_source=str(resume_path) if resume_path else args.init_mode)
+                      initialization_source=str(resume_path or a0_path) if (resume_path or a0_path) else args.init_mode)
         (args.output_dir / "run_config.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"A0 initialization mode: {args.init_mode}; all trainable parameters are optimized")
+    print(f"Degradation mode: {args.degradation_mode}; estimator frozen; no PSF loss")
     print(f"A0 effective train pairs: {len(train_dataset)}")
     if args.overfit_samples:
         print("A0-O overfit mode is active; results are not formal A0 metrics")

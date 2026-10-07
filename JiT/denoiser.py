@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from model_jit import JiT_models
 from restoration_losses import charbonnier_loss
+from degradation.model import BlurEstimator
+from degradation.inference import load_estimator, predict_probabilities
 
 
 class Denoiser(nn.Module):
@@ -10,12 +12,18 @@ class Denoiser(nn.Module):
         args
     ):
         super().__init__()
+        self.degradation_mode = getattr(args, "degradation_mode", None) or "none"
         self.net = JiT_models[args.model](
             input_size=args.img_size,
             in_channels=3,
             num_classes=args.class_num,
             attn_drop=args.attn_dropout,
             proj_drop=args.proj_dropout,
+            degradation_conditioning=self.degradation_mode != "none",
+        )
+        self.degradation_estimator = (
+            BlurEstimator().eval().requires_grad_(False)
+            if self.degradation_mode == "predicted" else None
         )
         self.img_size = args.img_size
         self.num_classes = args.class_num
@@ -47,6 +55,49 @@ class Denoiser(nn.Module):
             (batch_size,), self.num_classes, dtype=torch.long, device=device
         )
 
+    def train(self, mode=True):
+        super().train(mode)
+        # requires_grad=False alone does not freeze BatchNorm running statistics.
+        if self.degradation_estimator is not None:
+            self.degradation_estimator.eval()
+        return self
+
+    def load_degradation_estimator(self, path):
+        if self.degradation_estimator is None:
+            raise ValueError("Estimator weights are only used in predicted mode")
+        estimator = load_estimator(path)
+        self.degradation_estimator.load_state_dict(estimator.state_dict(), strict=True)
+        self.degradation_estimator.eval().requires_grad_(False)
+
+    def load_a0_state_dict(self, state_dict):
+        """Load all A0 parameters strictly; only the new A1 modules may be absent."""
+        if any(name.startswith(("net.degradation_condition.", "degradation_estimator."))
+               for name in state_dict):
+            raise ValueError("--a0_checkpoint must be an A0 checkpoint, not A1")
+        incompatible = self.load_state_dict(state_dict, strict=False)
+        invalid = [name for name in incompatible.missing_keys if not name.startswith(
+            ("net.degradation_condition.", "degradation_estimator."))]
+        if invalid or incompatible.unexpected_keys:
+            raise RuntimeError(f"Incompatible A0 checkpoint: {incompatible}")
+        return incompatible
+
+    def _degradation_probabilities(self, blur, degradation=None):
+        if self.degradation_mode == "none":
+            if degradation is not None:
+                raise ValueError("Explicit degradation is not allowed in none mode")
+            return None
+        if degradation is not None:
+            raise ValueError("Conditions are produced from the current blur input, not external labels")
+        if self.degradation_mode == "fixed":
+            probabilities = blur.new_zeros((blur.shape[0], 3))
+            probabilities[:, 0] = 1
+            return probabilities
+        # Use the actual synchronized/identity-replaced RGB condition. FP32
+        # keeps this frozen estimator independent of the restoration AMP mode.
+        self.degradation_estimator.eval()
+        with torch.no_grad(), torch.amp.autocast(device_type=blur.device.type, enabled=False):
+            return predict_probabilities(self.degradation_estimator, (blur.float() + 1) * 0.5)
+
     def load_official_state_dict(self, state_dict):
         """Load an official JiT Denoiser state dict into the A0 network.
 
@@ -55,7 +106,9 @@ class Denoiser(nn.Module):
         checkpoint incompatibilities cannot be silently ignored.
         """
         incompatible = self.load_state_dict(state_dict, strict=False)
-        allowed_missing_prefixes = ("net.blur_condition_encoder.",)
+        allowed_missing_prefixes = (
+            "net.blur_condition_encoder.", "net.degradation_condition.", "degradation_estimator."
+        )
         invalid_missing = [
             key for key in incompatible.missing_keys
             if not key.startswith(allowed_missing_prefixes)
@@ -85,10 +138,7 @@ class Denoiser(nn.Module):
                 f"clear and blur must have identical shapes; got "
                 f"clear={tuple(clear.shape)} and blur={tuple(blur.shape)}"
             )
-        if degradation is not None:
-            raise NotImplementedError(
-                "degradation conditioning belongs to A1-A3 and is not enabled in A0"
-            )
+        degradation = self._degradation_probabilities(blur, degradation)
 
         labels = self._null_labels(clear.size(0), clear.device)
         t = self.sample_t(clear.size(0), device=clear.device).view(
@@ -99,7 +149,7 @@ class Denoiser(nn.Module):
         z = t * clear + (1 - t) * e
         v = (clear - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=None)
+        x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=degradation)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
 
         # Preserve the official flow objective and add unweighted-in-time
@@ -120,10 +170,7 @@ class Denoiser(nn.Module):
     @torch.no_grad()
     def generate(self, blur, degradation=None, noise=None):
         """Restore images from noise while keeping the blur condition fixed."""
-        if degradation is not None:
-            raise NotImplementedError(
-                "degradation conditioning belongs to A1-A3 and is not enabled in A0"
-            )
+        degradation = self._degradation_probabilities(blur, degradation)
         device = blur.device
         bsz = blur.size(0)
         if noise is None:
@@ -151,29 +198,29 @@ class Denoiser(nn.Module):
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z = stepper(z, t, t_next, blur)
+            z = stepper(z, t, t_next, blur, degradation)
         # last step euler
-        z = self._euler_step(z, timesteps[-2], timesteps[-1], blur)
+        z = self._euler_step(z, timesteps[-2], timesteps[-1], blur, degradation)
         return z
 
     @torch.no_grad()
-    def _forward_sample(self, z, t, blur):
+    def _forward_sample(self, z, t, blur, degradation=None):
         labels = self._null_labels(z.size(0), z.device)
-        x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=None)
+        x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=degradation)
         return (x_pred - z) / (1.0 - t).clamp_min(self.t_eps)
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, blur):
-        v_pred = self._forward_sample(z, t, blur)
+    def _euler_step(self, z, t, t_next, blur, degradation=None):
+        v_pred = self._forward_sample(z, t, blur, degradation)
         z_next = z + (t_next - t) * v_pred
         return z_next
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, blur):
-        v_pred_t = self._forward_sample(z, t, blur)
+    def _heun_step(self, z, t, t_next, blur, degradation=None):
+        v_pred_t = self._forward_sample(z, t, blur, degradation)
 
         z_next_euler = z + (t_next - t) * v_pred_t
-        v_pred_t_next = self._forward_sample(z_next_euler, t_next, blur)
+        v_pred_t_next = self._forward_sample(z_next_euler, t_next, blur, degradation)
 
         v_pred = 0.5 * (v_pred_t + v_pred_t_next)
         z_next = z + (t_next - t) * v_pred
@@ -183,6 +230,12 @@ class Denoiser(nn.Module):
     def update_ema(self):
         source_params = list(self.parameters())
         for targ, src in zip(self.ema_params1, source_params):
-            targ.detach().mul_(self.ema_decay1).add_(src, alpha=1 - self.ema_decay1)
+            if src.requires_grad:
+                targ.detach().mul_(self.ema_decay1).add_(src, alpha=1 - self.ema_decay1)
+            else:
+                targ.copy_(src)
         for targ, src in zip(self.ema_params2, source_params):
-            targ.detach().mul_(self.ema_decay2).add_(src, alpha=1 - self.ema_decay2)
+            if src.requires_grad:
+                targ.detach().mul_(self.ema_decay2).add_(src, alpha=1 - self.ema_decay2)
+            else:
+                targ.copy_(src)

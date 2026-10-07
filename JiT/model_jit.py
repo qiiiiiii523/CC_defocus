@@ -8,6 +8,7 @@ import torch.nn as nn
 import math
 import torch.nn.functional as F
 from util.model_util import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm
+from degradation.condition import DegradationCondition
 
 
 def modulate(x, shift, scale):
@@ -254,7 +255,8 @@ class JiT(nn.Module):
         num_classes=1000,
         bottleneck_dim=128,
         in_context_len=32,
-        in_context_start=8
+        in_context_start=8,
+        degradation_conditioning=False
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -316,6 +318,11 @@ class JiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
 
         self.initialize_weights()
+        # Construct after the original initialization: mode none keeps A0's
+        # parameter names and random initialization unchanged.
+        self.degradation_condition = (
+            DegradationCondition(hidden_size) if degradation_conditioning else None
+        )
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -396,14 +403,12 @@ class JiT(nn.Module):
         t: flow time, (N,)
         y: retained class labels, (N,); restoration uses the null class
         blur: spatially aligned blurred-image condition, (N, C, H, W)
-        degradation: reserved for A1-A3; must be None in A0
+        degradation: optional [N,3] probabilities in light/medium/heavy order
         """
         if blur is None:
             raise ValueError("A0 JiT requires a blurred-image condition: blur must not be None")
-        if degradation is not None:
-            raise NotImplementedError(
-                "degradation conditioning belongs to A1-A3 and is not enabled in A0"
-            )
+        if degradation is not None and self.degradation_condition is None:
+            raise ValueError("Degradation adapter is disabled in A0 mode")
         if blur.shape != x.shape:
             raise ValueError(
                 f"blur must match the flow state shape; got blur={tuple(blur.shape)} "
@@ -414,6 +419,10 @@ class JiT(nn.Module):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
+        if degradation is not None:
+            if degradation.shape != (x.shape[0], 3):
+                raise ValueError("Degradation probabilities must have shape [B,3]")
+            c = c + self.degradation_condition(degradation.to(device=c.device, dtype=c.dtype))
 
         # Forward JiT.  The condition has one token per state token, so image
         # location is preserved.  A new condition is supplied on every ODE
