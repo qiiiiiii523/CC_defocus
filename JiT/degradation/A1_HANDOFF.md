@@ -1,6 +1,8 @@
 # 成员 C → JiT A1 训练交接
 
-成员 C 已完成退化估计代码、预测接口、固定数据清单核对和检查报告；**尚未改 JiT A0 主干，也未训练 A1**。GitHub 的 `codex/a1-degradation` 分支只放代码和文档。权重、预测 CSV 和示例图在单独的本地交接包中，由用户发给接收方；原始图像不进 GitHub。
+成员 C 已完成退化估计代码、预测接口、固定数据清单核对和检查报告；**尚未改 JiT A0 主干，也未训练 A1**。GitHub 的 `a1-degradation` 分支只放代码和文档。权重、预测 CSV 和示例图在单独的本地交接包中，由用户发给接收方；原始图像不进 GitHub。
+
+**2026-10-07 更新：**新增连续强度拟合与重训权重 `estimator-continuous.pt`，作为当前 A1 预测条件的优先探索版本。它在同一套新近似标签上优于旧权重与固定强度，但尚未通过 JiT 恢复效果验证。数据、指标与限制见 `CONTINUOUS_V1_RESULTS.md`。
 
 ## 接收方先检查数据和权重
 
@@ -13,9 +15,10 @@ python JiT/degradation/check_training_data.py \
   --val-manifest prepared/manifests/debug_val.jsonl
 ```
 
-本地交接包有两份约 1.7 MB 的权重：
+旧交接包有两份权重；新交接包另含改进权重：
 
-- `estimator_a1_3dh_pseudo.pt`：**A1 探索性对照建议使用**。只用固定 2,000 对训练图拟合的近似核标签训练；按训练集内部留出组选定 19 轮后，用全部 2,000 对重训。对固定 300 对真实模糊图输出不恒定的三档概率，但对近似标签的准确率 `83.0%`，低于固定预测轻档的 `85.7%`。它是可运行的候选，不是已证明优于简单基线的退化估计器。
+- `estimator-continuous.pt`：**当前 A1 探索性对照优先使用**。连续近似强度标签、可信度加权和训练集内部分组验证后重训；在固定 300 对的新近似标签上强度 MAE `0.152`、三档正确 `267/300`。仍非真实 PSF 标注或去模糊收益证明。
+- `estimator_a1_3dh_pseudo.pt`：旧版对照权重。旧近似标签准确率 `83.0%`，低于当时固定预测轻档的 `85.7%`；旧版结果口径与新标签结果不同，不直接比较。
 - `estimator_cnseg_synthetic.pt`：CNSeg 第二版 `pass/exclude` 清单的三档合成失焦权重；合成验证集 `912/912` 正确，但跨到固定 3DHistech 图像时 300 张全判轻档。只作为合成训练对照，不建议直接作为 A1 的主要条件。
 
 接收方自行把权重放在其训练服务器上的私有路径，运行时传入实际路径；**不要将 `.pt` 推到 GitHub**。
@@ -31,12 +34,12 @@ python JiT/degradation/check_training_data.py \
 
 ```bash
 python JiT/degradation/inference.py \
-  --checkpoint /path/to/estimator_a1_3dh_pseudo.pt \
+  --checkpoint /path/to/estimator-continuous.pt \
   --image prepared/images/3DHistech/3D/10140071_10164_34804.png \
   --device cuda
 
 python JiT/degradation/verify_handoff.py \
-  --checkpoint /path/to/estimator_a1_3dh_pseudo.pt \
+  --checkpoint /path/to/estimator-continuous.pt \
   --image prepared/images/3DHistech/3D/10140071_10164_34804.png \
   --device cuda
 ```
@@ -46,7 +49,7 @@ python JiT/degradation/verify_handoff.py \
 ```python
 from JiT.degradation.inference import load_estimator, predict_probabilities
 
-estimator = load_estimator("/path/to/estimator_a1_3dh_pseudo.pt", "cuda")
+estimator = load_estimator("/path/to/estimator-continuous.pt", "cuda")
 probabilities = predict_probabilities(estimator, blur_01)  # [B,3]
 ```
 
@@ -56,6 +59,6 @@ probabilities = predict_probabilities(estimator, blur_01)  # [B,3]
 
 1. 从 A 训练好的 **A0 检查点**出发，保留 A0 原有的模糊图空间条件；增加 `DegradationCondition(hidden_size)`。在现有 `c = t_emb + y_emb` 后加入预测概率的残差条件。原始 ImageNet 类别嵌入不是模糊等级。
 2. 在 `Denoiser.forward` 和 `generate` 中都只由输入 `blur` 预测概率。首次对照冻结估计器；采样前预测一次，并将同一个条件传给全部 ODE 步。训练和推理不得读取清晰目标或拟合标签来构造条件。
-3. 用同一 A0 起点、固定 2,000/300 清单、相同图像处理、预算和评价程序做 A0/A1 对照。鉴于估计器在真实验证图上尚未优于固定轻档，应增加**固定条件**对照，以判断收益是否来自预测内容，而非仅增加了参数。
+3. 用同一 A0 起点、固定 2,000/300 清单、相同图像处理、预算和评价程序做 A0/A1 对照。即使新估计器在近似标签上有提升，仍需增加**固定条件**对照，以判断恢复收益是否来自预测内容，而非仅增加了参数。
 
-具体数据、指标和局限见 `RESULTS.md`。A1 接线、训练和恢复图评价完成前，不能声称 A1 已完成或退化条件已经带来收益。
+旧版结果见 `RESULTS.md`，改进版见 `CONTINUOUS_V1_RESULTS.md`。A1 接线、训练和恢复图评价完成前，不能声称 A1 已完成或退化条件已经带来收益。
