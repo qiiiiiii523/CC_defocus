@@ -47,6 +47,9 @@ def train_one_epoch_a0(
         clear = batch["clear"].to(device, non_blocking=True)
         blur = batch["blur"].to(device, non_blocking=True)
         identity_fraction = float(batch["is_identity"].float().mean().item())
+        instance_mask = batch.get("instance_mask")
+        if instance_mask is not None:
+            instance_mask = instance_mask.to(device, non_blocking=True)
 
         amp_enabled = device.type == "cuda" and args.amp_bf16
         with torch.amp.autocast(
@@ -55,7 +58,8 @@ def train_one_epoch_a0(
             enabled=amp_enabled,
         ):
             losses = model(
-                clear, blur, degradation=None, return_loss_components=True
+                clear, blur, degradation=None, return_loss_components=True,
+                instance_mask=instance_mask,
             )
             loss = losses["loss"]
 

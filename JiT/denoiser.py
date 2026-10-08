@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from model_jit import JiT_models
 from restoration_losses import charbonnier_loss
+from nucleus_losses import nucleus_supervision_loss
 
 
 class Denoiser(nn.Module):
@@ -28,6 +29,9 @@ class Denoiser(nn.Module):
         # Legacy callers without these options keep the original flow loss.
         self.lambda_pix = getattr(args, "lambda_pix", 0.0)
         self.charbonnier_eps = getattr(args, "charbonnier_eps", 1e-3)
+        self.lambda_nucleus = getattr(args, "lambda_nucleus", 0.0)
+        self.nucleus_region_weight = getattr(args, "nucleus_region_weight", 1.0)
+        self.nucleus_boundary_weight = getattr(args, "nucleus_boundary_weight", 1.0)
 
         # ema
         self.ema_decay1 = args.ema_decay1
@@ -74,7 +78,7 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, clear, blur, degradation=None, return_loss_components=False):
+    def forward(self, clear, blur, degradation=None, return_loss_components=False, instance_mask=None):
         """Compute flow + weighted pixel loss on the same sampled endpoint.
 
         Default return remains a scalar for existing callers. The training
@@ -108,12 +112,26 @@ class Denoiser(nn.Module):
         loss_charb = charbonnier_loss(x_pred, clear, eps=self.charbonnier_eps)
         loss_pix_weighted = self.lambda_pix * loss_charb
         loss = loss_flow + loss_pix_weighted
+        nucleus = {key: x_pred.sum() * 0.0 for key in ("total", "region", "boundary")}
+        if self.lambda_nucleus > 0:
+            if instance_mask is None:
+                raise ValueError("Nucleus supervision requires an aligned instance_mask")
+            # Affine conversion only: do not clamp or detach the predicted endpoint.
+            nucleus = nucleus_supervision_loss(
+                (x_pred.float() + 1.0) * 0.5, (clear.float() + 1.0) * 0.5,
+                instance_mask, region_weight=self.nucleus_region_weight,
+                boundary_weight=self.nucleus_boundary_weight,
+            )
+            loss = loss + self.lambda_nucleus * nucleus["total"]
         if return_loss_components:
             return {
                 "loss": loss,
                 "loss_flow": loss_flow,
                 "loss_charb": loss_charb,
                 "loss_pix_weighted": loss_pix_weighted,
+                "loss_nucleus_region": nucleus["region"],
+                "loss_nucleus_boundary": nucleus["boundary"],
+                "loss_nucleus_weighted": self.lambda_nucleus * nucleus["total"],
             }
         return loss
 

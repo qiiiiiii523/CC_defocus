@@ -1,0 +1,28 @@
+{
+  "passed": true,
+  "checks": {
+    "zero_total_is_zero": true,
+    "region_count_positive": true,
+    "boundary_count_positive": true,
+    "interior_count_positive": true,
+    "gradient_finite": true,
+    "boundary_gradient_nonzero": true,
+    "outside_gradient_zero": true,
+    "finite_difference_matches": true
+  },
+  "mask_counts": {
+    "foreground": 28,
+    "boundary": 23,
+    "interior": 5
+  },
+  "losses": {
+    "total": 0.5,
+    "region": 0.25,
+    "boundary": 0.25
+  },
+  "finite_difference": 0.07927417755126953,
+  "analytic_gradient": 0.07919254899024963,
+  "gradient_min": 0.0,
+  "gradient_max": 0.07919254899024963,
+  "definition": "ordinary mean L1 reconstruction error over nucleus pixels and one-pixel inner instance boundaries"
+}

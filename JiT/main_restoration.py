@@ -31,12 +31,20 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import util.misc as misc
 from dataset_restoration import A0PairedDataset
+from dataset_cnseg import CNSegPairedDataset
 from denoiser import Denoiser
 from engine_restoration import restore_fixed_validation, train_one_epoch_a0
 
 
 def get_args_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("JiT A0 paired restoration")
+    parser.add_argument("--dataset_mode", choices=("3dhistech", "cnseg"), default="3dhistech")
+    parser.add_argument("--init_checkpoint", type=Path, default=None,
+                        help="Start a NEW experiment from A0 model weights; reset optimizer, EMA and epoch.")
+    parser.add_argument("--init_weights", choices=("model", "ema1", "ema2"), default="model")
+    parser.add_argument("--lambda_nucleus", type=float, default=0.0)
+    parser.add_argument("--nucleus_region_weight", type=float, default=1.0)
+    parser.add_argument("--nucleus_boundary_weight", type=float, default=1.0)
 
     # Architecture and official JiT flow settings.
     parser.add_argument("--model", default="JiT-B/16")
@@ -216,8 +224,9 @@ def _check_train_val_overlap(train_records, val_records):
     ids = {record.sample_id for record in train_records}
     paths = {path.resolve() for record in train_records
              for path in (record.blur_path, record.clear_path)}
+    groups = {getattr(record, "group_id", None) for record in train_records} - {None}
     for record in val_records:
-        if record.sample_id in ids or any(
+        if getattr(record, "group_id", None) in groups or record.sample_id in ids or any(
             path.resolve() in paths for path in (record.blur_path, record.clear_path)
         ):
             raise ValueError(f"Train/validation overlap: {record.sample_id}")
@@ -257,6 +266,10 @@ def _validation_subset(dataset) -> Subset:
 
 
 def _run_public_metrics(args) -> None:
+    if args.dataset_mode == "cnseg":
+        from evaluate_k0 import evaluate_cnseg
+        evaluate_cnseg(args)
+        return
     from evaluate import evaluate
 
     prediction_dir = args.prediction_root / args.model_name
@@ -280,6 +293,21 @@ def _run_metrics_and_sync(args) -> None:
 
 
 def main(args) -> None:
+    if args.init_checkpoint is not None and args.resume is not None:
+        raise ValueError("Use --init_checkpoint for a new experiment OR --resume for continuation, not both")
+    for field in ("lambda_nucleus", "nucleus_region_weight", "nucleus_boundary_weight"):
+        value = getattr(args, field)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{field} must be finite and non-negative")
+    if args.lambda_nucleus > 0 and args.dataset_mode != "cnseg":
+        raise ValueError("K0 requires CNSeg images and corresponding instance masks")
+    dataset_class = CNSegPairedDataset if args.dataset_mode == "cnseg" else A0PairedDataset
+    if args.init_checkpoint is not None and args.eval_only:
+        raise ValueError("Evaluation uses --resume; --init_checkpoint is for NEW training experiments")
+    if args.init_checkpoint is not None and args.start_epoch != 0:
+        raise ValueError("A new K0 experiment must start at epoch 0")
+    if args.init_checkpoint is not None and args.output_dir.resolve() == _checkpoint_file(args.init_checkpoint).resolve().parent:
+        raise ValueError("K0 output_dir must not overwrite the A0 initialization directory")
     resume_path = _checkpoint_file(args.resume)
     if args.eval_only and resume_path is None:
         raise ValueError("--eval_only requires --resume with a trained A0 checkpoint")
@@ -289,6 +317,9 @@ def main(args) -> None:
             raise FileNotFoundError(f"A0 resume checkpoint does not exist: {resume_path}")
         resume_checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
     args.init_mode = _resolve_init_mode(args.init_mode, resume_checkpoint)
+    if args.init_checkpoint is not None:
+        start_checkpoint = torch.load(_checkpoint_file(args.init_checkpoint), map_location="cpu", weights_only=False)
+        args.init_mode = _resolve_init_mode(None, start_checkpoint)
     if args.init_mode == "scratch":
         if args.model_name == "jit_a0":
             args.model_name = "jit_a0_scratch"
@@ -324,7 +355,7 @@ def main(args) -> None:
     train_loader = None
     train_sampler = None
     if not args.eval_only:
-        full_train_dataset = A0PairedDataset(
+        full_train_dataset = dataset_class(
             args.train_manifest,
             split="train",
             image_size=args.img_size,
@@ -368,7 +399,7 @@ def main(args) -> None:
         if len(train_loader) == 0:
             raise ValueError("Training loader is empty; reduce batch size or use overfit mode")
 
-    val_dataset = A0PairedDataset(
+    val_dataset = dataset_class(
         args.val_manifest,
         split="val",
         image_size=args.img_size,
@@ -396,6 +427,13 @@ def main(args) -> None:
     if resume_checkpoint is not None:
         model.load_state_dict(resume_checkpoint["model"], strict=True)
         print(f"Loaded A0 model checkpoint: {resume_path}")
+    elif args.init_checkpoint is not None:
+        key = {"model": "model", "ema1": "model_ema1", "ema2": "model_ema2"}[args.init_weights]
+        model.load_state_dict(start_checkpoint[key], strict=True)
+        args.start_epoch = 0
+        args.global_step = 0
+        print(f"K0 new-run initialization: {args.init_checkpoint}, {key}; optimizer/EMA/epoch reset")
+        del start_checkpoint
     else:
         _initialize_fresh_model(model, args)
 
@@ -430,7 +468,8 @@ def main(args) -> None:
             args.start_epoch = int(resume_checkpoint["epoch"]) + 1
             saved_args = resume_checkpoint.get("args")
             for field in ("lambda_pix", "charbonnier_eps", "identity_ratio",
-                          "ema_decay1", "ema_decay2"):
+                          "ema_decay1", "ema_decay2", "dataset_mode", "lambda_nucleus",
+                          "nucleus_region_weight", "nucleus_boundary_weight"):
                 saved_value = (saved_args.get(field) if isinstance(saved_args, dict)
                                else getattr(saved_args, field, None))
                 if saved_value is not None and saved_value != getattr(args, field):
@@ -471,8 +510,9 @@ def main(args) -> None:
                   for key, value in vars(args).items()}
         report.update(full_train_pairs=len(full_train_dataset),
                       effective_train_pairs=len(train_dataset), val_pairs=len(val_dataset),
-                      condition_init="copy_state_patch_embedder", gate_init=0,
-                      initialization_source=str(resume_path) if resume_path else args.init_mode)
+                      condition_init="checkpoint_preserved" if (resume_path or args.init_checkpoint) else "copy_state_patch_embedder",
+                      gate_init=None if (resume_path or args.init_checkpoint) else 0,
+                      initialization_source=str(resume_path or args.init_checkpoint) if (resume_path or args.init_checkpoint) else args.init_mode)
         (args.output_dir / "run_config.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"A0 initialization mode: {args.init_mode}; all trainable parameters are optimized")
