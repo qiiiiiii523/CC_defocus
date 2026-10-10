@@ -126,8 +126,13 @@ def run_training(args, cfg, device):
     if cfg["gradient_checkpointing"]:
         model.transformer.enable_gradient_checkpointing()
     vae = load_frozen_vae(model_id, device, torch.float32)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["learning_rate"],
-                                  weight_decay=cfg["weight_decay"], foreach=False)
+    if cfg.get("optimizer", "adamw").lower() == "sgd":
+        # Useful for a tiny 32 GB smoke/overfit run: SGD has no Adam moment
+        # buffers. Formal training keeps the default AdamW setting.
+        optimizer = torch.optim.SGD(model.parameters(), lr=cfg["learning_rate"])
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=cfg["learning_rate"],
+                                      weight_decay=cfg["weight_decay"], foreach=False)
     progress = {"step": 0, "epoch": 0, "next_batch": 0}
     resume_rng = None
     if checkpoint:

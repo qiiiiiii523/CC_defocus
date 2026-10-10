@@ -5,6 +5,7 @@
   "batch_size": 1,
   "gradient_accumulation_steps": 4,
   "learning_rate": 1e-4,
+  "optimizer": "sgd",
   "max_train_steps": 500,
   "seed": 20261010,
   "bf16": true,
