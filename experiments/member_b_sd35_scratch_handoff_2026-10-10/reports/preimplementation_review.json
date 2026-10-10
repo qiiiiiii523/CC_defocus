@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "question_id": "sd35_scratch",
+  "language": "python",
+  "reviewed_files": [
+    "CC_defocus/common_io.py",
+    "CC_defocus/evaluate.py",
+    "CC_defocus/prepared/manifests/debug_train.jsonl",
+    "CC_defocus/prepared/manifests/debug_val.jsonl",
+    "CC_defocus/prepared/manifests/rfn.jsonl",
+    "origin/jit-a0-scratch:JiT/main_restoration.py",
+    "origin/jit-a0-scratch:JiT/model_jit.py",
+    "origin/jit-a0-scratch:JiT/engine_restoration.py",
+    "workstreams/member_b_2026-09-28/sd35_restoration/code/train_sd35_controlnet.py",
+    "workstreams/member_b_2026-09-28/sd35_restoration/code/train_sd35_controlnet_b1.py",
+    "workstreams/member_b_2026-09-28/sd35_restoration/code/sweep_sd35_b1_img2img.py",
+    "workstreams/member_b_2026-09-28/code/run_sd35_vae_eval.py"
+  ],
+  "decision_id": "sd35_random_transformer_no_controlnet",
+  "checks": {
+    "syntax": {
+      "status": "NOT_APPLICABLE",
+      "evidence": [
+        "The requested scratch Transformer implementation does not exist yet; no runtime or syntax success is claimed."
+      ]
+    },
+    "input_contract": {
+      "status": "PASS",
+      "evidence": [
+        "The repository provides fixed 2000-pair training and 300-pair validation JSONL manifests.",
+        "common_io.py enforces RGB float32 [0,1], paired shapes, quality status, and safe output paths.",
+        "rfn.jsonl contains exactly 66976 train/pass records but also contains val and test records, so it cannot be passed unchanged to loaders that require one split per manifest."
+      ]
+    },
+    "method_alignment": {
+      "status": "FAIL",
+      "evidence": [
+        "Existing SD3.5 B0/B1/B2 code freezes the pretrained Transformer and trains a ControlNet.",
+        "The new decision requires no ControlNet, a randomly initialized SD3.5 Transformer, and an explicit spatial blur-latent condition path."
+      ]
+    },
+    "reproducibility": {
+      "status": "FAIL",
+      "evidence": [
+        "No new scratch configuration, checkpoint contract, dependency lock, or prompt-embedding cache exists yet.",
+        "The local Python environment does not currently contain diffusers, so the proposed model cannot be instantiated locally."
+      ]
+    },
+    "output_contract": {
+      "status": "PASS",
+      "evidence": [
+        "The root evaluate.py requires exactly 300 aligned PNG outputs and computes full-image RGB PSNR, SSIM, and LPIPS-Alex without resize or crop.",
+        "New inference code can save through common_io.save_prediction and reuse evaluate.py unchanged."
+      ]
+    },
+    "leakage": {
+      "status": "PASS",
+      "evidence": [
+        "The fixed debug manifests were previously checked for exact sample, path, and group overlap.",
+        "Full-data training must filter only the existing rfn train split and keep fixed debug_val for evaluation."
+      ]
+    }
+  },
+  "findings": [
+    {
+      "severity": "blocking",
+      "message": "Existing ControlNet code must not be presented as the requested scratch Transformer implementation."
+    },
+    {
+      "severity": "blocking",
+      "message": "A trainable spatial conditioning stem and a custom conditional Flow Matching sampler must be implemented before training."
+    },
+    {
+      "severity": "risk",
+      "message": "Full random initialization of the roughly 4.94 GB BF16 Transformer weight file is substantially more memory intensive than the prior ControlNet runs."
+    }
+  ],
+  "verdict": "FAILED",
+  "reviewed_at": "2026-10-10T00:00:00+08:00"
+}

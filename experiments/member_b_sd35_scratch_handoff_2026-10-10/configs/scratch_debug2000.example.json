@@ -1,0 +1,15 @@
+{
+  "train_manifest": "prepared/manifests/debug_train.jsonl",
+  "val_manifest": "prepared/manifests/debug_val.jsonl",
+  "resolution": 256,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 4,
+  "learning_rate": 1e-5,
+  "max_train_steps": 1000,
+  "seed": 20261010,
+  "bf16": true,
+  "gradient_checkpointing": true,
+  "flow_condition_noise_alpha": 0.15,
+  "sampling_steps": 20,
+  "notes": "Example only. Run smoke tests and 4-8 pair overfit before formal training."
+}
