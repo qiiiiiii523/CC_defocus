@@ -20,13 +20,11 @@
 
 ## 目录
 
-- `prepared/manifests/debug_train.jsonl`：固定 2000 对训练清单。
-- `prepared/manifests/debug_val.jsonl`：固定 300 对验证清单。
-- `code/common_io.py`、`code/evaluate.py`：公共数据读写和评价代码，原样复制。
-- `reports/previous_sd35_controlnet_results.md`：旧 ControlNet/B2 负面结果，不能当作 scratch 结果。
-- `reports/vae_check.md`：官方 VAE 清晰图编解码检查，只能说明 VAE 保结构，不能说明去模糊有效。
-- `requirements.txt`：已有环境依赖记录。
-- `configs/`、`code/`：队长在 GPU 环境中补充/运行 scratch 训练实现的位置。
+- `configs/`：scratch 训练示例配置。
+- `docs/交接清单.md`：队长执行顺序和验收项。
+- `reports/`：本方案审查记录和必要背景说明。
+
+仓库根目录已经有公共 `common_io.py`、`evaluate.py` 和固定清单；本分支不重复复制。固定清单继续使用仓库现有的 `prepared/manifests/debug_train.jsonl` 与 `prepared/manifests/debug_val.jsonl`。
 
 ## 固定数据校验
 

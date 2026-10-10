@@ -1,23 +1,13 @@
 [
   {
+    "path": "MANIFEST.json",
+    "bytes": 1733,
+    "sha256": "11384B2BFE2E461377C37EE0EC5B62ECA951DCE86E29281FA35529D133EA75B2"
+  },
+  {
     "path": "README.md",
-    "bytes": 4067,
-    "sha256": "C2276788B8F2D209B6C81537BD020FB481BD058E79DFA425967256D5F00803C1"
-  },
-  {
-    "path": "requirements.txt",
-    "bytes": 236,
-    "sha256": "BACBFBD4EC321221C86E28808032C235D4123705EFD0583D0BA449594F8D567B"
-  },
-  {
-    "path": "code\\common_io.py",
-    "bytes": 9638,
-    "sha256": "DF70C64EDA2B944A3B7B67440639F3B646509631E6438A43CBC65D7C0CBA09C9"
-  },
-  {
-    "path": "code\\evaluate.py",
-    "bytes": 10584,
-    "sha256": "4222E703DE5964FACD44AE6D1B3E0109BB19B30001CEB0B294D1F24DE2925CE4"
+    "bytes": 3838,
+    "sha256": "0ED0187C021802B163CEF75EB64E27861EF27F3D4D034ECC20086DAFCDB0F116"
   },
   {
     "path": "configs\\scratch_debug2000.example.json",
@@ -26,32 +16,12 @@
   },
   {
     "path": "docs\\交接清单.md",
-    "bytes": 781,
-    "sha256": "52E8DE0ED78E93588ECEA22E70C86BBDC333C5C16FA01C031179D784B027A242"
-  },
-  {
-    "path": "prepared\\manifests\\debug_train.jsonl",
-    "bytes": 668978,
-    "sha256": "EF5AECFCABC40590AD4348CF0DD8EB9B310B90B9D946A878C7561923909D195B"
-  },
-  {
-    "path": "prepared\\manifests\\debug_val.jsonl",
-    "bytes": 99918,
-    "sha256": "D5D7EC0863008D71A13C173AE064EBB3C25B71291FB2BF5578D0BC09E07D411B"
+    "bytes": 740,
+    "sha256": "B8B8E3D5BB98CBCCDDC106D48A904EEFACC2E136F4CD74948209093C29728B67"
   },
   {
     "path": "reports\\preimplementation_review.json",
     "bytes": 3501,
     "sha256": "20D03466D9466EBAFDF54002F81C2021F5B2811F2043BF7BA01F27F625F2CC88"
-  },
-  {
-    "path": "reports\\previous_sd35_controlnet_results.md",
-    "bytes": 9132,
-    "sha256": "38C878EAE924B69E7ADDDD4973F3F774EEBD7E0C95DCCBAD8404BBD61BAB601B"
-  },
-  {
-    "path": "reports\\vae_check.md",
-    "bytes": 1166,
-    "sha256": "1F471FEF0ABFE9321D9B216D7E7C8CA78CC22F02A4CE3FE1D4452DA1B5B572A5"
   }
 ]
