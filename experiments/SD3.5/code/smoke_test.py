@@ -26,10 +26,14 @@ def main():
     seed_all(20261010)
     device = torch.device("cuda")
     pair = PairedManifest(args.manifest, args.repo_root, max_samples=1, augment=False)[0]
-    model = SD35ScratchRestorer(args.model_id).to(device=device, dtype=torch.float32).train()
+    # Keep the trainable Transformer in BF16 for the 32 GB smoke card.  The
+    # smoke test only checks gradients and one parameter update; AdamW state is
+    # intentionally not allocated here because it can exceed the card limit.
+    model_dtype = torch.bfloat16 if bf16 else torch.float32
+    model = SD35ScratchRestorer(args.model_id).to(device=device, dtype=model_dtype).train()
     model.transformer.enable_gradient_checkpointing()
     vae = load_frozen_vae(args.model_id, device, torch.float32)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, foreach=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
     torch.cuda.reset_peak_memory_stats()
     blur = encode(vae, pair["blur"].unsqueeze(0).to(device)).float()
     clear = encode(vae, pair["clear"].unsqueeze(0).to(device)).float()
