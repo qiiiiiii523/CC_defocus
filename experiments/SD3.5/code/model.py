@@ -25,6 +25,8 @@ class SD35ScratchRestorer(nn.Module):
     def forward(self, x_t, z_blur, timestep, encoder_hidden_states=None,
                 pooled_projections=None):
         h = self.condition_stem(torch.cat([x_t, z_blur], dim=1))
+        # SD3Transformer2DModel consumes (B, sequence, channels).
+        h = h.flatten(2).transpose(1, 2)
         b = h.shape[0]
         if encoder_hidden_states is None:
             encoder_hidden_states = h.new_zeros((b, 77, self.joint_attention_dim))
@@ -37,4 +39,5 @@ class SD35ScratchRestorer(nn.Module):
             pooled_projections=pooled_projections,
             return_dict=False,
         )
-        return out[0] if isinstance(out, tuple) else out.sample
+        y = out[0] if isinstance(out, tuple) else out.sample
+        return y.transpose(1, 2).reshape(b, self.in_channels, int(y.shape[1] ** 0.5), -1)

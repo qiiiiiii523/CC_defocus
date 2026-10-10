@@ -24,13 +24,14 @@
 - `code/model.py`：随机初始化 Transformer 和模糊潜变量条件融合。
 - `code/flow_matching.py`：训练状态与目标构造。
 - `code/smoke_test.py`：GPU 前向、反向和条件敏感性检查。
-- `code/train_scratch.py`：训练入口骨架，正式训练前需接入仓库已有配对读取器。
+- `code/train_scratch.py`：训练入口。
+- `code/data.py`、`code/vae_utils.py`、`code/infer_scratch.py`：配对读取、官方 VAE 编解码和仅模糊输入推理。
 - `docs/交接清单.md`：队长执行顺序和验收项。
 - `reports/`：本方案审查记录和必要背景说明。
 
 仓库根目录已经有公共 `common_io.py`、`evaluate.py` 和固定清单；本分支不重复复制。固定清单继续使用仓库现有的 `prepared/manifests/debug_train.jsonl` 与 `prepared/manifests/debug_val.jsonl`。
 
-代码是未训练版本。`train_scratch.py` 会先保存配置并明确提示队长接入现有配对读取器，避免误用清晰参考或重新划分数据；不能把它当作已经跑通的训练结果。
+代码是未训练版本。训练和推理入口已补齐，但没有在本机 GPU 上运行验证；队长必须先运行 `smoke_test.py` 和 4–8 对过拟合测试。
 
 ## 固定数据校验
 
