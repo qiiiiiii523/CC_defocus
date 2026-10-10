@@ -1,66 +1,115 @@
-# SD3.5 scratch 训练交接包
+# SD3.5 scratch 去模糊训练
 
-这是成员 B 交给队长的独立交接目录。它只服务于“SD3.5 Medium Transformer 随机初始化、官方 VAE 冻结、模糊图条件恢复”的新版本，不覆盖 JiT A0，也不覆盖旧 ControlNet/B2 实验。
+Transformer 使用官方 SD3.5 Medium 配置随机初始化，不加载 Transformer 预训练权重；官方 VAE 冻结。模糊潜变量通过条件卷积进入 Transformer，训练条件 Flow Matching，推理只使用模糊图。
 
-## 结论先看
+训练与推理均保持参数和潜变量 FP32，Transformer 使用 BF16 autocast，VAE 使用 FP32。配置中的梯度累积、梯度检查点、训练样本限制和验证均实际生效。`max_train_steps` 指优化器更新次数；`num_epochs` 指完整遍历训练清单的轮数，同时设置时先达到任一上限即结束。尾部不足一个累积组也会更新，损失按实际样本数加权。
 
-- **现在不需要租卡**：整理、审查和交接材料已可在本地完成。
-- **队长训练前需要租卡**：先做单 batch 冒烟测试，再做 4–8 对过拟合测试，最后决定是否启动 2000/300 训练或更大规模训练。
-- **当前包不是已经训练好的模型**：本包提供固定清单、统一评价程序、已有负面结果和新方案说明；新 scratch 主干仍需在 GPU 上实现/验证后训练。
+本地使用真实的缩小版 Diffusers SD3 Transformer 验证算法和入口逻辑；完整 SD3.5 Medium、官方 VAE、CUDA 显存及真实小样本过拟合仍必须在服务器验收。正式训练是否收敛取决于数据和超参数，示例配置不构成效果保证。
 
-## 本次方案
+## 环境
 
-1. 不使用 ControlNet。
-2. SD3.5 Transformer 不加载预训练权重，按官方配置随机初始化。
-3. 使用官方预训练 VAE，并冻结 VAE 参数。
-4. 将模糊图编码为潜变量，作为空间条件；当前生成状态与模糊潜变量通过一个可训练的 3×3 条件卷积融合后送入 Transformer。
-5. 训练目标为潜空间条件 Flow Matching：从“模糊潜变量+噪声”走向清晰潜变量。
-6. 推理时只读取模糊图，不能读取清晰参考图。
-7. 评价沿用公共 `code/evaluate.py`，固定 RGB、无裁剪缩放、PSNR/SSIM/LPIPS-Alex。
+建议独立 Python 3.10–3.12 环境。本地 CPU 验证使用 Python 3.12、Torch 2.8.0+cpu、Diffusers 0.35.2、Transformers 4.56.2。服务器先安装与其驱动匹配的 Torch 2.8.0 / torchvision 0.23.0 CUDA 构建，再安装本目录依赖，避免误用 CPU 构建。确认能访问 `stabilityai/stable-diffusion-3.5-medium` 的 Transformer 配置和 VAE 权重，或通过 `--model-id` 使用包含 `transformer/` 配置与 `vae/` 权重的本地目录。
 
-## 目录
+```bash
+cd '/home/qht/大创/CC_defocus'
+python -m pip install -r experiments/SD3.5/requirements.txt
+python -c "import torch, diffusers; print(torch.__version__, diffusers.__version__, torch.cuda.is_available(), torch.cuda.is_bf16_supported())"
+```
 
-- `configs/`：scratch 训练示例配置。
-- `code/model.py`：随机初始化 Transformer 和模糊潜变量条件融合。
-- `code/flow_matching.py`：训练状态与目标构造。
-- `code/smoke_test.py`：GPU 前向、反向和条件敏感性检查。
-- `code/train_scratch.py`：训练入口。
-- `code/data.py`、`code/vae_utils.py`、`code/infer_scratch.py`：配对读取、官方 VAE 编解码和仅模糊输入推理。
-- `docs/交接清单.md`：队长执行顺序和验收项。
-- `reports/`：本方案审查记录和必要背景说明。
+这是单 GPU 入口；不通过 torchrun 启动多个独立进程。显存以真实 smoke_test 的峰值为准，不能把此前未启用精度/检查点的估计当作实测值。
 
-仓库根目录已经有公共 `common_io.py`、`evaluate.py` 和固定清单；本分支不重复复制。固定清单继续使用仓库现有的 `prepared/manifests/debug_train.jsonl` 与 `prepared/manifests/debug_val.jsonl`。
+## 全量数据准备
 
-代码是未训练版本。训练和推理入口已补齐，但没有在本机 GPU 上运行验证；队长必须先运行 `smoke_test.py` 和 4–8 对过拟合测试。
+`--repo-root` 是 `/home/qht/大创/CC_defocus`，不是图像目录。清单中的相对路径已经包含 `prepared/images/3DHistech/`。需要原有 `prepared/manifests/rfn.jsonl` 和固定 debug 清单。
 
-## 固定数据校验
+```bash
+python experiments/SD3.5/code/prepare_full_manifests.py \
+  --repo-root '/home/qht/大创/CC_defocus' --check-images
+```
 
-| 文件 | 行数 | SHA256 |
-|---|---:|---|
-| `debug_train.jsonl` | 2000 | `EF5AECFCABC40590AD4348CF0DD8EB9B310B90B9D946A878C7561923909D195B` |
-| `debug_val.jsonl` | 300 | `D5D7EC0863008D71A13C173AE064EBB3C25B71291FB2BF5578D0BC09E07D411B` |
+此命令保留现有划分，仅选 RFN/pass，生成 `full_train.jsonl` 和 `full_val.jsonl`，不写入测试清单，不更改 debug 清单。当前清单应得到 train=66,976、val=9,088、test=18,909。路径、配对和跨 split 的 group_id 均检查；`--check-images` 还逐图解码并检查原始 256×256 尺寸。生成的全量清单是可再生文件，不需要提交 Git。
 
-不要重新划分、排序或混用清单。`rfn.jsonl` 是合并清单，不能直接替代上述两个固定清单。
+## 先验收，再正式训练
 
-## 队长建议执行顺序
+先跑真实配对图像的编码、前向、反向、优化器更新、条件敏感性和解码：
 
-1. 在有 GPU 的环境安装 `requirements.txt`，确认 `diffusers`、`torch` 和官方 SD3.5 Medium 权限/权重可用。
-2. 先只加载 VAE 和 Transformer 配置，确认 **没有调用 Transformer.from_pretrained**；Transformer 必须随机初始化。
-3. 跑单 batch 前向、反向和条件敏感性检查：损失有限、Transformer 有梯度、VAE 无梯度。
-4. 用 4–8 对样本做小样本过拟合；若不能下降或恢复图不随模糊输入改变，先修实现，不启动正式训练。
-5. 通过后用固定 2000/300 清单训练和评价，与 JiT A0 使用同一 `evaluate.py`、同一 300 对验证集。
-6. 记录 checkpoint、配置、随机种子、训练/推理耗时、显存、PSNR、SSIM、LPIPS 和结构预览。
+```bash
+python experiments/SD3.5/code/smoke_test.py \
+  --repo-root '/home/qht/大创/CC_defocus'
+```
 
-## 资源估计
+再用固定 8 对训练样本做过拟合。该配置关闭随机裁剪/翻转；在线 val 是独立验证集，不能用它代替训练样本的过拟合判定。
 
-未在本机完成 GPU 运行验证。SD3.5 Medium 随机主干训练预计至少需要 48 GB 显存并启用 BF16、gradient checkpointing、梯度累积；80 GB 更稳妥。16–24 GB 不建议直接尝试正式训练。实际显存以队长的单 batch 冒烟结果为准。
+```bash
+python experiments/SD3.5/code/train_scratch.py \
+  --config experiments/SD3.5/configs/scratch_overfit8.example.json \
+  --repo-root '/home/qht/大创/CC_defocus' \
+  --output-dir runs/sd35-overfit8
+```
 
-## 目前已验证与未验证
+检查训练损失下降，并对这 8 个 sample_id 的模糊图调用单图推理，和对应清晰图比较。无法学习或条件无响应时停止验收，定位原因；不要直接启动全量训练。
 
-已验证：固定清单及哈希、公共评价协议、旧 B2 结果归档、官方 VAE 小样本结构检查、现有代码审查。
+通过后，调整训练轮数/学习率，启动全量训练：
 
-未验证：新的随机初始化 Transformer 条件通路、训练反向、推理采样、GPU 显存和正式指标。不要把本包写成“scratch 已训练成功”。
+```bash
+python experiments/SD3.5/code/train_scratch.py \
+  --config experiments/SD3.5/configs/scratch_full.example.json \
+  --repo-root '/home/qht/大创/CC_defocus' \
+  --output-dir runs/sd35-full
+```
 
-## 与 JiT 的边界
+全量配置以 10 轮作为可修改的起点；batch=1、累积=4 时每轮 16,744 次优化器更新。在线监控固定 debug_val 的前 16 对 PSNR，并非完整验证指标。训练日志在 `metrics.jsonl`。
 
-本实验用于检验 SD3.5 潜空间路线是否能学会模糊到清晰的对应关系。SD3.5 与 JiT 的架构和表示空间不同，指标只能作为同一数据与评价协议下的工程比较，不能单独归因于某一个结构因素。
+## 保存与续训
+
+结束时始终保存 `checkpoint-final.pt`。周期 checkpoint 保存模型、AdamW、随机数、Transformer 配置、VAE 来源、清单哈希及 epoch/batch 游标，使用临时文件完成后原子替换。默认保留最近 2 个数字命名的周期 checkpoint；`keep_checkpoints=0` 保留全部，final 不被清理。FP32 全模型和 AdamW checkpoint 很大，应为模型参数与优化器状态预留磁盘和内存。
+
+```bash
+python experiments/SD3.5/code/train_scratch.py \
+  --config experiments/SD3.5/configs/scratch_full.example.json \
+  --repo-root '/home/qht/大创/CC_defocus' \
+  --output-dir runs/sd35-full \
+  --resume runs/sd35-full/checkpoint-2000.pt
+```
+
+从实际存在的最近 checkpoint 恢复；周期保存之间尚未保存的更新无法恢复。旧版仅模型权重的 checkpoint 可以用于推理，但不能用于精确续训。续训可以延长训练步数/轮数或调整日志、验证、保存间隔；不允许静默改变 batch、累积数、学习率、训练清单等训练约定。固定种子和按 epoch/index 生成的增强保证 worker 预取不改变样本；同设备环境下恢复模型 RNG。跨 GPU 型号/算子实现不承诺逐位一致。
+
+## 推理与公共评价
+
+推理读取 checkpoint 中的分辨率、alpha、采样步数和模型配置，不缩放原图。FP32 潜变量积分和 BF16 autocast 共用 `flow_matching.sample`，固定种子保证同输入结果可复现。
+
+```bash
+python experiments/SD3.5/code/infer_scratch.py \
+  --checkpoint runs/sd35-full/checkpoint-final.pt \
+  --manifest prepared/manifests/debug_val.jsonl \
+  --repo-root '/home/qht/大创/CC_defocus' \
+  --model-name sd35_scratch
+python evaluate.py --model-name sd35_scratch
+```
+
+公共评价继续使用固定 300 对，全图 RGB、无缩放裁边、PSNR/SSIM/LPIPS-Alex。生成全量 val 的图像可以传入 `full_val.jsonl`，但公共 evaluate.py 固定要求 300 对，不能直接把该清单传入来声称完成全量评价。
+
+单图推理：
+
+```bash
+python experiments/SD3.5/code/infer_scratch.py \
+  --checkpoint runs/sd35-full/checkpoint-final.pt \
+  --blur prepared/images/3DHistech/3D/<sample_id>.png \
+  --out outputs/sd35_scratch/<sample_id>.png
+```
+
+## 本地回归测试
+
+```bash
+python -m pip install pytest==8.4.2
+python -m pytest experiments/SD3.5/tests -q
+```
+
+测试不下载官方模型，使用真实 Diffusers 缩小版 Transformer、真实小型 VAE 和确定性 VAE 替身，验证 BF16 梯度/采样、累积尾批次、checkpoint 恢复、结束保存、数据划分、增强一致性、固定种子推理和可学习性。命令行推理测试将清晰参考文件设为不可解码，确认模型只读取模糊像素。它们不替代服务器的完整模型验收。
+
+当前固定清单 SHA256（本次没有改写清单）：
+
+- debug_train：`C4EA702E559A97027C7476154F6565AE6848CCF3D39C155270BB7624636D640B`
+- debug_val：`6CE1474E51C1814191EA01734A98375A6B50261D0B6FEDC74A58693745BB821C`
+
+`reports/preimplementation_review.json` 是历史审查记录，不能当作当前实现的验收报告。

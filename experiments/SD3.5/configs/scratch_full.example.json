@@ -1,0 +1,20 @@
+{
+  "train_manifest": "prepared/manifests/full_train.jsonl",
+  "val_manifest": "prepared/manifests/debug_val.jsonl",
+  "resolution": 256,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 4,
+  "learning_rate": 1e-5,
+  "num_epochs": 10,
+  "seed": 20261010,
+  "bf16": true,
+  "gradient_checkpointing": true,
+  "flow_condition_noise_alpha": 0.15,
+  "sampling_steps": 20,
+  "num_workers": 4,
+  "checkpoint_every": 2000,
+  "keep_checkpoints": 2,
+  "validation_every": 500,
+  "validation_samples": 16,
+  "notes": "Full official train/pass split, 16744 optimizer updates per epoch for 66976 samples. Ten epochs is an editable starting schedule, not a convergence guarantee. Monitor disk use: checkpoints contain FP32 model and AdamW state."
+}

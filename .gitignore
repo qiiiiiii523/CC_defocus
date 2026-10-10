@@ -32,3 +32,6 @@ runs/
 *.zip
 *.tmp
 /image.png
+
+/prepared/manifests/full_train.jsonl
+/prepared/manifests/full_val.jsonl

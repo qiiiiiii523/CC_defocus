@@ -1,43 +1,45 @@
-"""Untrained SD3.5 scratch restoration model.
-
-The Transformer is created from the official config and is intentionally NOT
-loaded with pretrained weights.  This file has not been GPU-verified locally.
-"""
-from __future__ import annotations
-
+"""SD3.5 restoration with a random Transformer and a spatial blur condition."""
 import torch
 from torch import nn
 
+DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-3.5-medium"
+
 
 class SD35ScratchRestorer(nn.Module):
-    def __init__(self, model_id: str = "stabilityai/stable-diffusion-3.5-medium"):
+    def __init__(self, model_id=DEFAULT_MODEL_ID, transformer_config=None):
         super().__init__()
         from diffusers import SD3Transformer2DModel
 
-        cfg = SD3Transformer2DModel.load_config(model_id, subfolder="transformer")
+        cfg = transformer_config
+        if cfg is None:
+            cfg = SD3Transformer2DModel.load_config(model_id, subfolder="transformer")
+        # Config only: never load pretrained Transformer weights.
         self.transformer = SD3Transformer2DModel.from_config(cfg)
-        in_channels = int(getattr(cfg, "in_channels", 16))
-        self.condition_stem = nn.Conv2d(in_channels * 2, in_channels, 3, padding=1)
-        self.in_channels = in_channels
-        self.joint_attention_dim = int(getattr(cfg, "joint_attention_dim", 4096))
-        self.pooled_projection_dim = int(getattr(cfg, "pooled_projection_dim", 2048))
+        cfg = self.transformer.config
+        self.in_channels = int(cfg.in_channels)
+        self.joint_attention_dim = int(cfg.joint_attention_dim)
+        self.pooled_projection_dim = int(cfg.pooled_projection_dim)
+        self.condition_stem = nn.Conv2d(self.in_channels * 2, self.in_channels, 3, padding=1)
 
     def forward(self, x_t, z_blur, timestep, encoder_hidden_states=None,
                 pooled_projections=None):
+        if x_t.ndim != 4 or x_t.shape != z_blur.shape:
+            raise ValueError("State and blur condition must have identical BCHW shapes")
+        if x_t.shape[1] != self.in_channels:
+            raise ValueError("Latent channel count differs from Transformer config")
         h = self.condition_stem(torch.cat([x_t, z_blur], dim=1))
-        # SD3Transformer2DModel consumes (B, sequence, channels).
-        h = h.flatten(2).transpose(1, 2)
         b = h.shape[0]
         if encoder_hidden_states is None:
             encoder_hidden_states = h.new_zeros((b, 77, self.joint_attention_dim))
         if pooled_projections is None:
             pooled_projections = h.new_zeros((b, self.pooled_projection_dim))
+        # SD3 handles patch embedding and unpatchifying internally: BCHW in/out.
         out = self.transformer(
-            hidden_states=h,
-            timestep=timestep,
+            hidden_states=h, timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
-            pooled_projections=pooled_projections,
-            return_dict=False,
+            pooled_projections=pooled_projections, return_dict=False,
         )
         y = out[0] if isinstance(out, tuple) else out.sample
-        return y.transpose(1, 2).reshape(b, self.in_channels, int(y.shape[1] ** 0.5), -1)
+        if y.shape != x_t.shape:
+            raise ValueError("Transformer output {} differs from state {}".format(y.shape, x_t.shape))
+        return y

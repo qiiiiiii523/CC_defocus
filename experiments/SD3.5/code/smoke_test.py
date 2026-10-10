@@ -1,30 +1,69 @@
-"""GPU smoke test: construction, forward, backward and condition sensitivity."""
+"""Real blur/clear -> frozen VAE -> Transformer -> optimizer -> sampler smoke test."""
 import argparse
+import json
+
 import torch
-from model import SD35ScratchRestorer
+
+from data import PairedManifest, PROJECT_ROOT
+from flow_matching import make_training_state, sample
+from model import DEFAULT_MODEL_ID, SD35ScratchRestorer
+from runtime_utils import autocast_context, seed_all
+from vae_utils import decode, encode, load_frozen_vae
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--model-id', default='stabilityai/stable-diffusion-3.5-medium')
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    parser.add_argument("--repo-root", default=str(PROJECT_ROOT))
+    parser.add_argument("--manifest", default="prepared/manifests/debug_train.jsonl")
+    parser.add_argument("--fp32", action="store_true")
+    args = parser.parse_args()
     if not torch.cuda.is_available():
-        raise SystemExit('GPU is required for this smoke test; no claim of success was made.')
-    device = torch.device('cuda')
-    model = SD35ScratchRestorer(args.model_id).to(device, dtype=torch.bfloat16)
-    model.train()
-    x = torch.randn(1, model.in_channels, 32, 32, device=device, dtype=torch.bfloat16)
-    c = torch.randn_like(x)
-    t = torch.full((1,), 500.0, device=device, dtype=torch.bfloat16)
-    y = model(x, c, t)
-    loss = y.float().square().mean()
+        raise SystemExit("CUDA is required for the full SD3.5 smoke test")
+    bf16 = not args.fp32
+    if bf16 and not torch.cuda.is_bf16_supported():
+        raise SystemExit("GPU does not support BF16; use --fp32")
+    seed_all(20261010)
+    device = torch.device("cuda")
+    pair = PairedManifest(args.manifest, args.repo_root, max_samples=1, augment=False)[0]
+    model = SD35ScratchRestorer(args.model_id).to(device=device, dtype=torch.float32).train()
+    model.transformer.enable_gradient_checkpointing()
+    vae = load_frozen_vae(args.model_id, device, torch.float32)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, foreach=False)
+    torch.cuda.reset_peak_memory_stats()
+    blur = encode(vae, pair["blur"].unsqueeze(0).to(device)).float()
+    clear = encode(vae, pair["clear"].unsqueeze(0).to(device)).float()
+    state, condition, time, target = make_training_state(blur, clear)
+    with autocast_context(device, bf16):
+        prediction = model(state, condition, time)
+    loss = (prediction.float() - target).square().mean()
+    if not torch.isfinite(loss):
+        raise AssertionError("Non-finite loss")
     loss.backward()
-    grads = [p.grad for p in model.parameters() if p.requires_grad]
-    assert torch.isfinite(loss).item() and any(g is not None and torch.isfinite(g).all() for g in grads)
-    y2 = model(x, torch.zeros_like(c), t).detach()
-    assert not torch.allclose(y.detach(), y2), 'condition path appears inactive'
-    print('PASS: forward, backward, finite loss/gradients, condition sensitivity')
+    for name, module in (("transformer", model.transformer), ("condition_stem", model.condition_stem)):
+        gradients = [p.grad for p in module.parameters() if p.grad is not None]
+        if not gradients or not all(torch.isfinite(g).all() for g in gradients):
+            raise AssertionError("Missing/non-finite gradients: " + name)
+        if not any(torch.count_nonzero(g) for g in gradients):
+            raise AssertionError("Zero gradients: " + name)
+    if any(p.requires_grad or p.grad is not None for p in vae.parameters()):
+        raise AssertionError("VAE must remain frozen")
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    del prediction, loss
+    model.eval()
+    with torch.no_grad(), autocast_context(device, bf16):
+        a = model(state, condition, time)
+        b = model(state, torch.zeros_like(condition), time)
+    if torch.allclose(a, b):
+        raise AssertionError("Condition path is inactive")
+    image = decode(vae, sample(model, blur, steps=2, bf16=bf16))
+    if image.shape != (1, 3, 256, 256) or not torch.isfinite(image).all():
+        raise AssertionError("Invalid decoded prediction")
+    print(json.dumps({"status": "PASS", "bf16": bf16, "vae_dtype": str(blur.dtype),
+                      "peak_GiB": torch.cuda.max_memory_allocated() / 2**30}), flush=True)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

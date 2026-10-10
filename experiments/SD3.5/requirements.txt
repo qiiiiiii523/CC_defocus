@@ -1,0 +1,14 @@
+# Install a matching CUDA build of torch separately on the server.
+# CPU logic tests were verified with torch 2.8.0+cpu / Python 3.12.
+torch==2.8.0
+diffusers==0.35.2
+transformers==4.56.2
+accelerate==1.10.1
+numpy==2.2.6
+Pillow==11.3.0
+safetensors==0.8.0
+huggingface-hub==0.36.2
+# Public evaluator dependencies:
+torchvision==0.23.0
+scikit-image>=0.25,<0.26
+lpips==0.1.4

@@ -1,0 +1,61 @@
+{
+  "reviewed_at": "2026-10-10",
+  "branch": "SD3.5",
+  "base_head": "7cfc642bcebff25fb05a0bd6c388de97b6682629",
+  "status": "LOCAL_CPU_REGRESSIONS_PASSED_FULL_GPU_VALIDATION_REQUIRED",
+  "environment": {
+    "python": "3.12.14",
+    "torch": "2.8.0+cpu",
+    "diffusers": "0.35.2",
+    "transformers": "4.56.2",
+    "vae": "real reduced local AutoencoderKL and deterministic test double"
+  },
+  "tests": {
+    "passed": 14,
+    "covers": [
+      "BF16 forward/backward and gradient checkpointing with real reduced SD3 Transformer",
+      "partial accumulation matches a large batch",
+      "mid-epoch resume equals uninterrupted weights bit for bit",
+      "stateless paired augmentation consistent across workers",
+      "full split extraction and overlap checks",
+      "seeded inference and shape preservation",
+      "reduced model can learn",
+      "resume rejects changed training contracts",
+      "real reduced VAE training, final save, next-epoch resume and CLI inference",
+      "manifest inference never decodes clear reference pixels",
+      "checkpoint retention and RNG-safe validation"
+    ]
+  },
+  "prior_data_audit": {
+    "train_pass": 66976,
+    "val_pass": 9088,
+    "test_pass": 18909,
+    "train_missing_paths": 0,
+    "debug_train_decoded": 2000,
+    "debug_val_decoded": 300,
+    "shape": [
+      256,
+      256,
+      3
+    ],
+    "sample_and_group_split_overlap": 0
+  },
+  "fixed": [
+    "BF16 autocast",
+    "gradient accumulation and checkpointing",
+    "FP32 VAE/latent path shared with sampler",
+    "full manifest generator and full/overfit configs",
+    "atomic periodic and final checkpoints with optimizer/RNG/data progress",
+    "configuration-aware single and manifest inference",
+    "online validation and dependency versions",
+    "updated server handoff and package manifest"
+  ],
+  "not_verified": [
+    "official full-size Transformer/VAE weights on GPU",
+    "server data existence and decoding",
+    "server GPU peak memory",
+    "full-size 8-pair overfitting",
+    "full training convergence and official quality metrics"
+  ],
+  "server_repo_root": "/home/qht/大创/CC_defocus"
+}

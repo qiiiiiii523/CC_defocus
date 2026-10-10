@@ -11,5 +11,9 @@
   "gradient_checkpointing": true,
   "flow_condition_noise_alpha": 0.15,
   "sampling_steps": 20,
-  "notes": "Example only. Run smoke tests and 4-8 pair overfit before formal training."
+  "num_workers": 2,
+  "checkpoint_every": 500,
+  "validation_every": 100,
+  "validation_samples": 8,
+  "notes": "Steps count optimizer updates; this debug run covers two epochs at effective batch 4."
 }

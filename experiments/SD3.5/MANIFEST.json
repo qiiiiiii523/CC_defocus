@@ -1,27 +1,92 @@
 [
   {
-    "path": "MANIFEST.json",
-    "bytes": 1733,
-    "sha256": "11384B2BFE2E461377C37EE0EC5B62ECA951DCE86E29281FA35529D133EA75B2"
+    "path": "code/data.py",
+    "bytes": 3133,
+    "sha256": "3E0D97332A469FD6D6F00A79BB9E012CD002260104E95192600BA8AC983FFA1C"
+  },
+  {
+    "path": "code/flow_matching.py",
+    "bytes": 1619,
+    "sha256": "7C6814428F7BE8B1684A82EFAB6EC4A224290AA19350564B25E8D241B6A6BA06"
+  },
+  {
+    "path": "code/infer_scratch.py",
+    "bytes": 5010,
+    "sha256": "DAB85BA275E195BE87EF6A8A1ED63E09A1B2D4A92E92FFBE34430556D42C9511"
+  },
+  {
+    "path": "code/model.py",
+    "bytes": 2192,
+    "sha256": "8FA8FABE5FB59F00DAAFBE7ABFD515D8DA90FA48055BCB79C690D890DEAD8AB1"
+  },
+  {
+    "path": "code/prepare_full_manifests.py",
+    "bytes": 3606,
+    "sha256": "7656315ED8C6B68A08578F4D70F34DDE502F565499650BD38156934B4A5376BA"
+  },
+  {
+    "path": "code/runtime_utils.py",
+    "bytes": 6040,
+    "sha256": "1BB87D89FEFF66D30DB0F7E115BD950D8E8980DD1DCA336A4C4E3A3B9BA7A175"
+  },
+  {
+    "path": "code/smoke_test.py",
+    "bytes": 3407,
+    "sha256": "C962A1CA4D2D5169B55F67092BDD213306D7230F47BB91E2F9E131C29B6D79ED"
+  },
+  {
+    "path": "code/train_scratch.py",
+    "bytes": 9350,
+    "sha256": "0371FA356336ABB2D0CA4141A9D76F3564F30704297EC6DAE2EDB137F1ED7C28"
+  },
+  {
+    "path": "code/vae_utils.py",
+    "bytes": 989,
+    "sha256": "3B4C6D591EA2E50171264AF130B78982D3784B60FBAEC3354F10A22B374C8C09"
+  },
+  {
+    "path": "configs/scratch_debug2000.example.json",
+    "bytes": 580,
+    "sha256": "912B4D06A5AEC7506A20197A56A48E1F7BF7AA1F6E8DE7AC64FAD4B5DFBE5224"
+  },
+  {
+    "path": "configs/scratch_full.example.json",
+    "bytes": 738,
+    "sha256": "6E0F71206BD6984892B6EB42CB64745865415496CC62DD7D4BD5E49179E496A8"
+  },
+  {
+    "path": "configs/scratch_overfit8.example.json",
+    "bytes": 736,
+    "sha256": "8FD54822C9E9A2A543EDC256AE510D02F72B415CEDCE9E88E8E8A935577B3B5D"
+  },
+  {
+    "path": "docs/交接清单.md",
+    "bytes": 986,
+    "sha256": "D504DC3664A2D5B0A79A084FB93D56784160C4F85982AB69FEF3664A0F34E4C4"
   },
   {
     "path": "README.md",
-    "bytes": 3838,
-    "sha256": "0ED0187C021802B163CEF75EB64E27861EF27F3D4D034ECC20086DAFCDB0F116"
+    "bytes": 7057,
+    "sha256": "3CFEA1274096CB071F01E709417C2107151E332FE4993DEA4445FDE988ABE446"
   },
   {
-    "path": "configs\\scratch_debug2000.example.json",
-    "bytes": 468,
-    "sha256": "75FD375A1118626DDB1E9EF84F0D9C3D651C946F7A7DBFCF9C0EB4D3CB86A60F"
+    "path": "reports/fix_validation_2026-10-10.json",
+    "bytes": 2188,
+    "sha256": "01A5E7A94A2FE84E42769AD395A0EB7A93E202A2FFE97AF30C13AE929E5FF381"
   },
   {
-    "path": "docs\\交接清单.md",
-    "bytes": 740,
-    "sha256": "B8B8E3D5BB98CBCCDDC106D48A904EEFACC2E136F4CD74948209093C29728B67"
+    "path": "reports/preimplementation_review.json",
+    "bytes": 3581,
+    "sha256": "9A5955D3F756507392EE2B54BC2330AC18B2BBFC6C5B9C95FE03064BB3B2366E"
   },
   {
-    "path": "reports\\preimplementation_review.json",
-    "bytes": 3501,
-    "sha256": "20D03466D9466EBAFDF54002F81C2021F5B2811F2043BF7BA01F27F625F2CC88"
+    "path": "requirements.txt",
+    "bytes": 368,
+    "sha256": "6A757F1F763F9C734E5739424E99AB6553084B1ED3843C1C5D82449036C88009"
+  },
+  {
+    "path": "tests/test_training.py",
+    "bytes": 15626,
+    "sha256": "376E127AB34A827EA2A3A91AA9A535CAE9CE7C713F4DBB3E9552B45DEE5158B7"
   }
 ]
