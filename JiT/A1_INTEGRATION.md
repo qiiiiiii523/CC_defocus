@@ -1,5 +1,8 @@
 # JiT A1：退化条件整合说明
 
+2026-10-11：局部 A1 已兼容 C 的 3.0 权重 `local-estimator-v3.pt`。
+局部接线不变，新实验使用 3.0 权重，旧权重保留；详见下方局部接入说明。
+
 2026-10-10：本分支新增局部 A1。新模式为 `fixed_local` / `predicted_local`，
 接入、权重和训练示例见 [A1_LOCAL_INTEGRATION.md](A1_LOCAL_INTEGRATION.md)。
 下文的 `fixed` / `predicted` 保留为旧全局模式，便于恢复和复查旧实验。

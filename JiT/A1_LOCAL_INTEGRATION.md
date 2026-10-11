@@ -2,6 +2,9 @@
 
 日期：2026-10-11。接入分支：`jit-a1`；C 模块来源：`a1-degradation` 的 `8ee33c940052507cabaf72e37f73ae63550a3b4c`。
 
+2026-10-11 更新：新实验采用 C 的 3.0 权重 `local-estimator-v3.pt`。
+网络结构、局部输出和 token 注入方式不变，仅增加权重格式兼容并更新实验配置。
+
 ## 本轮范围
 
 本轮仅做局部 A1 条件接入，保留原 Flow + Charbonnier 目标。引入 C 的
@@ -40,7 +43,7 @@ Transformer 入口、类别 context token 插入前；保留局部差异，不�
 |---|---|---|
 | `none` | 原 A0 RGB 条件 | 不需要估计器 |
 | `fixed_local` | 恒定轻度概率图，经新的局部 token 适配器 | 不需要估计器 |
-| `predicted_local` | C 局部预测图，经局部 token 适配器 | `local-estimator.pt` |
+| `predicted_local` | C 局部预测图，经局部 token 适配器 | 新实验用 `local-estimator-v3.pt`；兼容旧 `local-estimator.pt` |
 | `fixed` / `predicted` | 旧全局向量、时间/类别调制 | 保留原全局权重及断点行为 |
 
 新局部模式需要显式选择；默认仍为 `none`。不能把局部权重传给旧 `predicted`。
@@ -50,19 +53,40 @@ Transformer 入口、类别 context token 插入前；保留局部差异，不�
 指定不一致模式、错误通道顺序、错误估计器结构或缺失 A0 主干键都会拒绝。
 局部适配器跟随主干维护 EMA；冻结估计器不做 EMA 平滑。
 
+旧局部权重提供 `levels` 元数据，继续严格核对。3.0 交付权重未提供该字段，
+加载器仅接受下方已核实 SHA-256 对应的这份 3.0 文件，再严格加载网络参数。
+不会因为字段缺失就默认所有未知权重都使用相同通道含义。新包中的 `model.py`
+是旧全局估计器，未用它替换本分支的 `local_model.py`。
+
+若已用旧估计器训练 A1，3.0 应从同一 A0 起点另开新实验。`--resume` 会恢复
+断点内的估计器，不能通过换外部文件把旧实验变成 3.0，也不支持同时传新的估计器路径。
+
 ## 交付权重
 
-本地：`D:\大创\JiT\degradation\weights\local-estimator.pt`。
+新 3.0 本地：`D:\大创\JiT\degradation\weights\local-estimator-v3.pt`。
+
+3.0 SHA-256：`04cb85d6d59016e4a7e3cf2f83ce607bb771d0556c8bdb96c7fe6682178adc0b`。
+
+来源：用户提供的 `A1~A3局部_估计器3.0` 目录。文件哈希、50 个参数名称及尺寸
+已与交付和旧权重静态核对；未执行模型加载或推理。
+
+旧版仍保留：`D:\大创\JiT\degradation\weights\local-estimator.pt`。
 
 SHA-256：`6e52146ee49939ddcf32d7f745bb5803db403eecc6278fa4cd77c27f6269f62b`。
 
 权重来自用户提供的 `A1~A3局部改进.zip`，与 C 交接记录一致。该文件被 Git 忽略，
-代码推送或拉取不会带上它，服务器需单独上传到项目 `JiT/degradation/weights/`。
+旧、新权重均被 Git 忽略；代码推送或拉取不会带上它们，服务器需单独上传
+`local-estimator-v3.pt` 到项目 `JiT/degradation/weights/`，保留旧文件。
 
 C 报告的合成验证强度 MAE 为局部 `0.1729`、旧全局 `0.9231`；真实配对图
 离线重模糊 MSE 为局部 `0.00073517`、旧全局 `0.00073662`。这些是 C 的模块结果，
 没有在本轮重跑；尚未证明 JiT 恢复 PSNR/SSIM 改善。它是三种预设高斯核的局部概率，
 不能称为真实显微镜 PSF 测量。
+
+C 的 3.0 README 报告合成强度 MAE `0.1583`、合成重模糊 MSE `0.0001262`、
+真实配对重模糊 MSE `0.00066446`。用户截图的合成指标为 MAE `0.1655`、
+MSE `0.0001353`，两份材料合成数值不同，不能混作同一评价口径；真实配对值一致。
+这些均为估计器离线结果，本次未重跑，也不是 JiT 恢复的 PSNR/SSIM/LPIPS。
 
 ## 接入检查与服务器训练
 
@@ -90,7 +114,7 @@ python -u main_restoration.py \
   --a0_checkpoint "/home/qht/大创/CC_defocus/checkpoints/a0_v1_frozen/checkpoint-last.pth" \
   --a0_weights ema2 \
   --degradation_mode predicted_local \
-  --degradation_checkpoint "/home/qht/大创/CC_defocus/JiT/degradation/weights/local-estimator.pt" \
+  --degradation_checkpoint "/home/qht/大创/CC_defocus/JiT/degradation/weights/local-estimator-v3.pt" \
   --train_manifest "/home/qht/大创/CC_defocus/prepared/manifests/3dh_full_train.jsonl" \
   --expected_train_pairs 66976 \
   --val_manifest "/home/qht/大创/CC_defocus/prepared/manifests/debug_val.jsonl" \
@@ -101,8 +125,8 @@ python -u main_restoration.py \
   --eval_weights ema2 --sampling_method euler --num_sampling_steps 1 \
   --noise_scale 1 --t_eps 0.05 --seed 0 --eval_seed 0 \
   --eval_batch_size 4 --amp_bf16 --num_workers 4 --run_metrics \
-  --model_name jit_a1_local_predicted_e10 \
-  --output_dir "/home/qht/大创/CC_defocus/checkpoints/jit_a1_local_predicted_e10"
+  --model_name jit_a1_local_v3_predicted_e10 \
+  --output_dir "/home/qht/大创/CC_defocus/checkpoints/jit_a1_local_v3_predicted_e10"
 ```
 
 `fixed_local` 和 `none` 对照使用相同共同参数，移除估计器参数并更换模式、

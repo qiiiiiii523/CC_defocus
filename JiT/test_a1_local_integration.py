@@ -153,6 +153,22 @@ class LocalIntegrationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 load_local_estimator(path)
 
+    def test_loader_accepts_delivered_v3_and_rejects_unknown_missing_metadata(self):
+        path = Path(__file__).parent / "degradation/weights/local-estimator-v3.pt"
+        estimator = load_local_estimator(path)
+        self.assertFalse(estimator.training)
+        self.assertTrue(all(not parameter.requires_grad for parameter in estimator.parameters()))
+        model = local_model("predicted_local")
+        model.load_degradation_estimator(path)
+        probabilities = model._degradation_probabilities(torch.rand(1, 3, 32, 32) * 2 - 1)
+        self.assertEqual(probabilities.shape, (1, 3, 8, 8))
+        torch.testing.assert_close(probabilities.sum(1), torch.ones(1, 8, 8))
+        with tempfile.TemporaryDirectory() as directory:
+            unknown = Path(directory) / "unknown.pt"
+            torch.save({"model": estimator.state_dict()}, unknown)
+            with self.assertRaisesRegex(ValueError, "no levels metadata"):
+                load_local_estimator(unknown)
+
 
 if __name__ == "__main__":
     unittest.main()
