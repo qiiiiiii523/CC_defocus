@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from model_jit import JiT_models
@@ -7,6 +8,7 @@ from degradation.inference import load_estimator, predict_probabilities
 from degradation.local_model import LocalBlurEstimator
 from degradation.local_condition import predict_local_from_jit_blur
 from degradation.local_inference import load_local_estimator
+from degradation.a2_loss import local_psf_loss
 
 
 class Denoiser(nn.Module):
@@ -29,7 +31,7 @@ class Denoiser(nn.Module):
             BlurEstimator().eval().requires_grad_(False)
             if self.degradation_mode == "predicted" else
             LocalBlurEstimator().eval().requires_grad_(False)
-            if self.degradation_mode == "predicted_local" else None
+            if self.degradation_mode in ("predicted_local", "psf_local") else None
         )
         self.img_size = args.img_size
         self.num_classes = args.class_num
@@ -42,6 +44,16 @@ class Denoiser(nn.Module):
         # Legacy callers without these options keep the original flow loss.
         self.lambda_pix = getattr(args, "lambda_pix", 0.0)
         self.charbonnier_eps = getattr(args, "charbonnier_eps", 1e-3)
+        self.lambda_psf = getattr(args, "lambda_psf", None)
+        self.lambda_psf = 0.0 if self.lambda_psf is None else self.lambda_psf
+        self.psf_eps = getattr(args, "psf_eps", None)
+        self.psf_eps = 1e-3 if self.psf_eps is None else self.psf_eps
+        if not math.isfinite(self.lambda_psf) or self.lambda_psf < 0:
+            raise ValueError("lambda_psf must be finite and nonnegative")
+        if self.degradation_mode != "psf_local" and self.lambda_psf != 0:
+            raise ValueError("PSF loss is only enabled by the A2 psf_local mode")
+        if not math.isfinite(self.psf_eps) or self.psf_eps <= 0:
+            raise ValueError("psf_eps must be finite and positive")
 
         # ema
         self.ema_decay1 = args.ema_decay1
@@ -71,7 +83,7 @@ class Denoiser(nn.Module):
     def load_degradation_estimator(self, path):
         if self.degradation_estimator is None:
             raise ValueError("Estimator weights are only used in predicted modes")
-        estimator = (load_local_estimator(path) if self.degradation_mode == "predicted_local"
+        estimator = (load_local_estimator(path) if self.degradation_mode in ("predicted_local", "psf_local")
                      else load_estimator(path))
         self.degradation_estimator.load_state_dict(estimator.state_dict(), strict=True)
         self.degradation_estimator.eval().requires_grad_(False)
@@ -81,7 +93,7 @@ class Denoiser(nn.Module):
         if any(name.startswith(("net.degradation_condition.", "net.local_degradation_condition.",
                                 "degradation_estimator."))
                for name in state_dict):
-            raise ValueError("--a0_checkpoint must be an A0 checkpoint, not A1")
+            raise ValueError("--a0_checkpoint must be an A0 checkpoint, not an A1/A2 experiment")
         incompatible = self.load_state_dict(state_dict, strict=False)
         invalid = [name for name in incompatible.missing_keys if not name.startswith(
             ("net.degradation_condition.", "net.local_degradation_condition.", "degradation_estimator."))]
@@ -110,7 +122,7 @@ class Denoiser(nn.Module):
         # keeps this frozen estimator independent of the restoration AMP mode.
         self.degradation_estimator.eval()
         with torch.no_grad(), torch.amp.autocast(device_type=blur.device.type, enabled=False):
-            if self.degradation_mode == "predicted_local":
+            if self.degradation_mode in ("predicted_local", "psf_local"):
                 return predict_local_from_jit_blur(blur.float(), self.degradation_estimator)
             return predict_probabilities(self.degradation_estimator, (blur.float() + 1) * 0.5)
 
@@ -144,8 +156,8 @@ class Denoiser(nn.Module):
         z = torch.randn(n, device=device) * self.P_std + self.P_mean
         return torch.sigmoid(z)
 
-    def forward(self, clear, blur, degradation=None, return_loss_components=False):
-        """Compute flow + weighted pixel loss on the same sampled endpoint.
+    def forward(self, clear, blur, degradation=None, return_loss_components=False, is_identity=None):
+        """Compute supervised endpoint loss and optional A2 PSF consistency.
 
         Default return remains a scalar for existing callers. The training
         engine requests components for separate logging.
@@ -166,7 +178,10 @@ class Denoiser(nn.Module):
         z = t * clear + (1 - t) * e
         v = (clear - z) / (1 - t).clamp_min(self.t_eps)
 
-        x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=degradation)
+        # A2 estimates a field solely for the loss: the restoration network
+        # receives exactly the A0 inputs, never the PSF field as a condition.
+        net_degradation = None if self.degradation_mode == "psf_local" else degradation
+        x_pred = self.net(z, t.flatten(), labels, blur=blur, degradation=net_degradation)
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.t_eps)
 
         # Preserve the official flow objective and add unweighted-in-time
@@ -175,19 +190,34 @@ class Denoiser(nn.Module):
         loss_charb = charbonnier_loss(x_pred, clear, eps=self.charbonnier_eps)
         loss_pix_weighted = self.lambda_pix * loss_charb
         loss = loss_flow + loss_pix_weighted
+        if self.degradation_mode == "psf_local":
+            loss_psf = local_psf_loss(
+                x_pred, blur, degradation, is_identity=is_identity, epsilon=self.psf_eps
+            )
+            loss_psf_weighted = self.lambda_psf * loss_psf
+            loss = loss + loss_psf_weighted
         if return_loss_components:
-            return {
+            components = {
                 "loss": loss,
                 "loss_flow": loss_flow,
                 "loss_charb": loss_charb,
                 "loss_pix_weighted": loss_pix_weighted,
             }
+            if self.degradation_mode == "psf_local":
+                components.update(loss_psf=loss_psf, loss_psf_weighted=loss_psf_weighted)
+            return components
         return loss
 
     @torch.no_grad()
     def generate(self, blur, degradation=None, noise=None):
         """Restore images from noise while keeping the blur condition fixed."""
-        degradation = self._degradation_probabilities(blur, degradation)
+        if self.degradation_mode == "psf_local":
+            if degradation is not None:
+                raise ValueError("A2 inference does not accept a degradation condition")
+            # Training-only loss: inference does not invoke the estimator.
+            degradation = None
+        else:
+            degradation = self._degradation_probabilities(blur, degradation)
         device = blur.device
         bsz = blur.size(0)
         if noise is None:

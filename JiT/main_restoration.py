@@ -41,10 +41,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     # Architecture and official JiT flow settings.
     parser.add_argument("--model", default="JiT-B/16")
     parser.add_argument("--degradation_mode", default=None,
-                        choices=("none", "fixed", "predicted", "fixed_local", "predicted_local"),
+                        choices=("none", "fixed", "predicted", "fixed_local", "predicted_local", "psf_local"),
                         help="Fresh runs default to none; resumes inherit the saved mode.")
     parser.add_argument("--degradation_checkpoint", type=Path, default=None,
-                        help="C's frozen global/local estimator; required for fresh predicted modes.")
+                        help="C's frozen estimator; required for fresh predicted or psf_local runs.")
     parser.add_argument("--a0_checkpoint", type=Path, default=None,
                         help="Initialize from A0 without restoring its optimizer/epoch/EMA.")
     parser.add_argument("--a0_weights", default="ema2", choices=("model", "ema1", "ema2"),
@@ -80,6 +80,15 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--charbonnier_eps", default=1e-3, type=float,
         help="Positive Charbonnier smoothing constant on the RGB [0,1] scale.",
+    )
+    parser.add_argument(
+        "--lambda_psf", default=None, type=float,
+        help="A2 consistency-loss coefficient; explicitly set for new psf_local runs."
+             " 0 is the zero-weight ablation; resumes inherit the saved value.",
+    )
+    parser.add_argument(
+        "--psf_eps", default=None, type=float,
+        help="A2 Charbonnier epsilon on RGB [0,1]; fresh default 1e-3, resumes inherit it.",
     )
     parser.add_argument(
         "--overfit_samples",
@@ -196,6 +205,26 @@ def _resolve_degradation_mode(requested, checkpoint=None):
     if checkpoint is not None and requested is not None and requested != saved:
         raise ValueError(f"Resume degradation_mode mismatch: saved {saved}, requested {requested}")
     return saved if checkpoint is not None else (requested or "none")
+
+
+def _resolve_psf_settings(args, checkpoint=None):
+    """Require explicit new A2 weights and prevent changing a resumed objective."""
+    for field, default in (("lambda_psf", 0.0), ("psf_eps", 1e-3)):
+        requested = getattr(args, field, None)
+        saved = _saved_argument(checkpoint, field, default)
+        saved = default if saved is None else saved
+        if (field == "lambda_psf" and args.degradation_mode == "psf_local"
+                and checkpoint is None and requested is None):
+            raise ValueError("New A2 psf_local runs require an explicit --lambda_psf")
+        if checkpoint is not None and requested is not None and requested != saved:
+            raise ValueError(f"Resume {field} mismatch: saved {saved}; repeat the original objective")
+        setattr(args, field, saved if checkpoint is not None else (default if requested is None else requested))
+    if not math.isfinite(args.lambda_psf) or args.lambda_psf < 0:
+        raise ValueError("--lambda_psf must be finite and nonnegative")
+    if not math.isfinite(args.psf_eps) or args.psf_eps <= 0:
+        raise ValueError("--psf_eps must be finite and positive")
+    if args.degradation_mode != "psf_local" and args.lambda_psf != 0:
+        raise ValueError("--lambda_psf requires the A2 psf_local mode; A1/A3 mixing is not enabled")
 
 
 def _resolve_init_mode(requested, checkpoint=None):
@@ -333,6 +362,7 @@ def main(args) -> None:
             if saved is not None and saved != getattr(args, field):
                 raise ValueError(f"A0 starting {field} mismatch: saved {saved}, requested {getattr(args, field)}")
     args.degradation_mode = _resolve_degradation_mode(args.degradation_mode, resume_checkpoint)
+    _resolve_psf_settings(args, resume_checkpoint)
     args.init_mode = _resolve_init_mode(
         args.init_mode, resume_checkpoint if resume_checkpoint is not None else a0_checkpoint
     )
@@ -341,19 +371,19 @@ def main(args) -> None:
     )
     if args.degradation_checkpoint is not None:
         if resume_checkpoint is not None:
-            raise ValueError("A1 resume uses the embedded estimator; omit --degradation_checkpoint")
-        if args.degradation_mode not in ("predicted", "predicted_local"):
-            raise ValueError("--degradation_checkpoint requires predicted or predicted_local mode")
+            raise ValueError("Resume uses the embedded estimator; omit --degradation_checkpoint")
+        if args.degradation_mode not in ("predicted", "predicted_local", "psf_local"):
+            raise ValueError("--degradation_checkpoint requires a predicted or psf_local mode")
         if not args.degradation_checkpoint.is_file():
             raise FileNotFoundError(args.degradation_checkpoint)
         args.degradation_checkpoint_sha256 = _manifest_sha256(args.degradation_checkpoint)
-    elif args.degradation_mode in ("predicted", "predicted_local") and resume_checkpoint is None:
-        raise ValueError("Fresh predicted mode requires --degradation_checkpoint")
-    if resume_checkpoint is not None and args.degradation_mode in ("predicted", "predicted_local"):
+    elif args.degradation_mode in ("predicted", "predicted_local", "psf_local") and resume_checkpoint is None:
+        raise ValueError("Fresh predicted/psf_local modes require --degradation_checkpoint")
+    if resume_checkpoint is not None and args.degradation_mode in ("predicted", "predicted_local", "psf_local"):
         args.degradation_checkpoint = _saved_argument(resume_checkpoint, "degradation_checkpoint")
     if args.degradation_mode != "none":
         if args.model_name == "jit_a0":
-            args.model_name = f"jit_a1_{args.degradation_mode}"
+            args.model_name = "jit_a2_psf_local" if args.degradation_mode == "psf_local" else f"jit_a1_{args.degradation_mode}"
         if args.output_dir == PROJECT_ROOT / "checkpoints" / "jit_a0":
             args.output_dir = PROJECT_ROOT / "checkpoints" / args.model_name
     elif a0_path is not None:
@@ -474,7 +504,7 @@ def main(args) -> None:
         print(f"Initialized from A0 {source_key}: {a0_path}; new optimizer, EMA and epoch schedule")
     else:
         _initialize_fresh_model(model, args)
-    if args.degradation_mode in ("predicted", "predicted_local") and resume_checkpoint is None:
+    if args.degradation_mode in ("predicted", "predicted_local", "psf_local") and resume_checkpoint is None:
         model.load_degradation_estimator(args.degradation_checkpoint)
     if a0_checkpoint is not None:
         args.a0_checkpoint_sha256 = _manifest_sha256(a0_path)
@@ -557,14 +587,18 @@ def main(args) -> None:
         report.update(
             degradation_representation=("local_probability_map" if args.degradation_mode.endswith("_local")
                                         else "global_probabilities" if args.degradation_mode != "none" else "none"),
-            degradation_injection=("image_tokens_before_transformer" if args.degradation_mode.endswith("_local")
+            degradation_injection=("none" if args.degradation_mode == "psf_local" else
+                                   "image_tokens_before_transformer" if args.degradation_mode.endswith("_local")
                                    else "time_class_modulation" if args.degradation_mode != "none" else "none"),
-            psf_loss_enabled=False,
+            psf_loss_enabled=args.degradation_mode == "psf_local" and args.lambda_psf > 0,
+            psf_identity_policy="exclude_identity_replaced_samples",
+            psf_target="actual_observed_blur",
+            psf_prediction="sampled_clean_endpoint",
         )
         (args.output_dir / "run_config.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"A0 initialization mode: {args.init_mode}; all trainable parameters are optimized")
-    print(f"Degradation mode: {args.degradation_mode}; estimator frozen; no PSF loss")
+    print(f"Degradation mode: {args.degradation_mode}; estimator frozen; PSF coefficient={args.lambda_psf:g}")
     print(f"A0 effective train pairs: {len(train_dataset)}")
     if args.overfit_samples:
         print("A0-O overfit mode is active; results are not formal A0 metrics")
@@ -574,6 +608,9 @@ def main(args) -> None:
         f"A0 objective: flow + {args.lambda_pix:g} * Charbonnier; "
         f"eps={args.charbonnier_eps:g}; pixel error measured on RGB [0,1]"
     )
+    if args.degradation_mode == "psf_local":
+        print(f"A2 additionally uses {args.lambda_psf:g} * local PSF consistency; "
+              f"eps={args.psf_eps:g}; identity samples excluded; no degradation injection")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:

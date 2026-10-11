@@ -47,6 +47,9 @@ def train_one_epoch_a0(
         clear = batch["clear"].to(device, non_blocking=True)
         blur = batch["blur"].to(device, non_blocking=True)
         identity_fraction = float(batch["is_identity"].float().mean().item())
+        forward_options = {}
+        if model_without_ddp.degradation_mode == "psf_local":
+            forward_options["is_identity"] = batch["is_identity"].to(device, non_blocking=True)
 
         amp_enabled = device.type == "cuda" and args.amp_bf16
         with torch.amp.autocast(
@@ -55,7 +58,7 @@ def train_one_epoch_a0(
             enabled=amp_enabled,
         ):
             losses = model(
-                clear, blur, degradation=None, return_loss_components=True
+                clear, blur, degradation=None, return_loss_components=True, **forward_options
             )
             loss = losses["loss"]
 
@@ -86,7 +89,8 @@ def train_one_epoch_a0(
         if log_writer is not None and step % args.log_freq == 0:
             epoch_1000x = int((step / len(data_loader) + epoch) * 1000)
             for name, value in reduced_losses.items():
-                log_writer.add_scalar(f"a0/train_{name}", value, epoch_1000x)
+                namespace = "a2" if model_without_ddp.degradation_mode == "psf_local" else "a0"
+                log_writer.add_scalar(f"{namespace}/train_{name}", value, epoch_1000x)
             log_writer.add_scalar(
                 "a0/identity_fraction", identity_fraction, epoch_1000x
             )
