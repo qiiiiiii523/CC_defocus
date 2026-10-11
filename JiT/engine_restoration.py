@@ -99,6 +99,8 @@ def train_one_epoch_a0(
     if log_writer is not None:
         log_writer.add_scalar("a0/condition_gate", gate, epoch)
     adapter = model_without_ddp.net.degradation_condition
+    if adapter is None:
+        adapter = model_without_ddp.net.local_degradation_condition
     if adapter is not None:
         degradation_gate = float(adapter.gate.detach().item())
         print(f"A1 degradation gate at epoch {epoch}: {degradation_gate:.6f}")

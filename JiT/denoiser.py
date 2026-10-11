@@ -4,6 +4,9 @@ from model_jit import JiT_models
 from restoration_losses import charbonnier_loss
 from degradation.model import BlurEstimator
 from degradation.inference import load_estimator, predict_probabilities
+from degradation.local_model import LocalBlurEstimator
+from degradation.local_condition import predict_local_from_jit_blur
+from degradation.local_inference import load_local_estimator
 
 
 class Denoiser(nn.Module):
@@ -19,11 +22,14 @@ class Denoiser(nn.Module):
             num_classes=args.class_num,
             attn_drop=args.attn_dropout,
             proj_drop=args.proj_dropout,
-            degradation_conditioning=self.degradation_mode != "none",
+            degradation_conditioning=self.degradation_mode in ("fixed", "predicted"),
+            local_degradation_conditioning=self.degradation_mode in ("fixed_local", "predicted_local"),
         )
         self.degradation_estimator = (
             BlurEstimator().eval().requires_grad_(False)
-            if self.degradation_mode == "predicted" else None
+            if self.degradation_mode == "predicted" else
+            LocalBlurEstimator().eval().requires_grad_(False)
+            if self.degradation_mode == "predicted_local" else None
         )
         self.img_size = args.img_size
         self.num_classes = args.class_num
@@ -64,19 +70,21 @@ class Denoiser(nn.Module):
 
     def load_degradation_estimator(self, path):
         if self.degradation_estimator is None:
-            raise ValueError("Estimator weights are only used in predicted mode")
-        estimator = load_estimator(path)
+            raise ValueError("Estimator weights are only used in predicted modes")
+        estimator = (load_local_estimator(path) if self.degradation_mode == "predicted_local"
+                     else load_estimator(path))
         self.degradation_estimator.load_state_dict(estimator.state_dict(), strict=True)
         self.degradation_estimator.eval().requires_grad_(False)
 
     def load_a0_state_dict(self, state_dict):
         """Load all A0 parameters strictly; only the new A1 modules may be absent."""
-        if any(name.startswith(("net.degradation_condition.", "degradation_estimator."))
+        if any(name.startswith(("net.degradation_condition.", "net.local_degradation_condition.",
+                                "degradation_estimator."))
                for name in state_dict):
             raise ValueError("--a0_checkpoint must be an A0 checkpoint, not A1")
         incompatible = self.load_state_dict(state_dict, strict=False)
         invalid = [name for name in incompatible.missing_keys if not name.startswith(
-            ("net.degradation_condition.", "degradation_estimator."))]
+            ("net.degradation_condition.", "net.local_degradation_condition.", "degradation_estimator."))]
         if invalid or incompatible.unexpected_keys:
             raise RuntimeError(f"Incompatible A0 checkpoint: {incompatible}")
         return incompatible
@@ -92,10 +100,18 @@ class Denoiser(nn.Module):
             probabilities = blur.new_zeros((blur.shape[0], 3))
             probabilities[:, 0] = 1
             return probabilities
+        if self.degradation_mode == "fixed_local":
+            # A constant spatial field uses exactly the same local token adapter
+            # as predicted_local, controlling for its extra trainable parameters.
+            probabilities = blur.new_zeros((blur.shape[0], 3, 1, 1))
+            probabilities[:, 0] = 1
+            return probabilities
         # Use the actual synchronized/identity-replaced RGB condition. FP32
         # keeps this frozen estimator independent of the restoration AMP mode.
         self.degradation_estimator.eval()
         with torch.no_grad(), torch.amp.autocast(device_type=blur.device.type, enabled=False):
+            if self.degradation_mode == "predicted_local":
+                return predict_local_from_jit_blur(blur.float(), self.degradation_estimator)
             return predict_probabilities(self.degradation_estimator, (blur.float() + 1) * 0.5)
 
     def load_official_state_dict(self, state_dict):
@@ -107,7 +123,8 @@ class Denoiser(nn.Module):
         """
         incompatible = self.load_state_dict(state_dict, strict=False)
         allowed_missing_prefixes = (
-            "net.blur_condition_encoder.", "net.degradation_condition.", "degradation_estimator."
+            "net.blur_condition_encoder.", "net.degradation_condition.",
+            "net.local_degradation_condition.", "degradation_estimator."
         )
         invalid_missing = [
             key for key in incompatible.missing_keys

@@ -1,5 +1,9 @@
 # JiT A1：退化条件整合说明
 
+2026-10-10：本分支新增局部 A1。新模式为 `fixed_local` / `predicted_local`，
+接入、权重和训练示例见 [A1_LOCAL_INTEGRATION.md](A1_LOCAL_INTEGRATION.md)。
+下文的 `fixed` / `predicted` 保留为旧全局模式，便于恢复和复查旧实验。
+
 整合分支：jit-a1。来源：origin/a1-degradation 的 JiT/degradation，
 选择性引入模块，没有覆盖 C 分支中旧的 A0 主干、数据入口及损失代码。
 本地不启动训练/模型；语法检查不代表服务器运行测试已经通过。

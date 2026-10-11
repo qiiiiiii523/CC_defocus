@@ -41,10 +41,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     # Architecture and official JiT flow settings.
     parser.add_argument("--model", default="JiT-B/16")
     parser.add_argument("--degradation_mode", default=None,
-                        choices=("none", "fixed", "predicted"),
+                        choices=("none", "fixed", "predicted", "fixed_local", "predicted_local"),
                         help="Fresh runs default to none; resumes inherit the saved mode.")
     parser.add_argument("--degradation_checkpoint", type=Path, default=None,
-                        help="C's frozen estimator; required for fresh predicted runs.")
+                        help="C's frozen global/local estimator; required for fresh predicted modes.")
     parser.add_argument("--a0_checkpoint", type=Path, default=None,
                         help="Initialize from A0 without restoring its optimizer/epoch/EMA.")
     parser.add_argument("--a0_weights", default="ema2", choices=("model", "ema1", "ema2"),
@@ -342,14 +342,14 @@ def main(args) -> None:
     if args.degradation_checkpoint is not None:
         if resume_checkpoint is not None:
             raise ValueError("A1 resume uses the embedded estimator; omit --degradation_checkpoint")
-        if args.degradation_mode != "predicted":
-            raise ValueError("--degradation_checkpoint requires predicted mode")
+        if args.degradation_mode not in ("predicted", "predicted_local"):
+            raise ValueError("--degradation_checkpoint requires predicted or predicted_local mode")
         if not args.degradation_checkpoint.is_file():
             raise FileNotFoundError(args.degradation_checkpoint)
         args.degradation_checkpoint_sha256 = _manifest_sha256(args.degradation_checkpoint)
-    elif args.degradation_mode == "predicted" and resume_checkpoint is None:
+    elif args.degradation_mode in ("predicted", "predicted_local") and resume_checkpoint is None:
         raise ValueError("Fresh predicted mode requires --degradation_checkpoint")
-    if resume_checkpoint is not None and args.degradation_mode == "predicted":
+    if resume_checkpoint is not None and args.degradation_mode in ("predicted", "predicted_local"):
         args.degradation_checkpoint = _saved_argument(resume_checkpoint, "degradation_checkpoint")
     if args.degradation_mode != "none":
         if args.model_name == "jit_a0":
@@ -474,7 +474,7 @@ def main(args) -> None:
         print(f"Initialized from A0 {source_key}: {a0_path}; new optimizer, EMA and epoch schedule")
     else:
         _initialize_fresh_model(model, args)
-    if args.degradation_mode == "predicted" and resume_checkpoint is None:
+    if args.degradation_mode in ("predicted", "predicted_local") and resume_checkpoint is None:
         model.load_degradation_estimator(args.degradation_checkpoint)
     if a0_checkpoint is not None:
         args.a0_checkpoint_sha256 = _manifest_sha256(a0_path)
@@ -554,6 +554,13 @@ def main(args) -> None:
                       effective_train_pairs=len(train_dataset), val_pairs=len(val_dataset),
                       condition_init="copy_state_patch_embedder", gate_init=0,
                       initialization_source=str(resume_path or a0_path) if (resume_path or a0_path) else args.init_mode)
+        report.update(
+            degradation_representation=("local_probability_map" if args.degradation_mode.endswith("_local")
+                                        else "global_probabilities" if args.degradation_mode != "none" else "none"),
+            degradation_injection=("image_tokens_before_transformer" if args.degradation_mode.endswith("_local")
+                                   else "time_class_modulation" if args.degradation_mode != "none" else "none"),
+            psf_loss_enabled=False,
+        )
         (args.output_dir / "run_config.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"A0 initialization mode: {args.init_mode}; all trainable parameters are optimized")

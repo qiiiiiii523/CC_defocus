@@ -9,6 +9,7 @@ import math
 import torch.nn.functional as F
 from util.model_util import VisionRotaryEmbeddingFast, get_2d_sincos_pos_embed, RMSNorm
 from degradation.condition import DegradationCondition
+from degradation.local_condition import LocalDegradationCondition
 
 
 def modulate(x, shift, scale):
@@ -256,7 +257,8 @@ class JiT(nn.Module):
         bottleneck_dim=128,
         in_context_len=32,
         in_context_start=8,
-        degradation_conditioning=False
+        degradation_conditioning=False,
+        local_degradation_conditioning=False
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -322,6 +324,11 @@ class JiT(nn.Module):
         # parameter names and random initialization unchanged.
         self.degradation_condition = (
             DegradationCondition(hidden_size) if degradation_conditioning else None
+        )
+        if degradation_conditioning and local_degradation_conditioning:
+            raise ValueError("Select either global or local A1 conditioning")
+        self.local_degradation_condition = (
+            LocalDegradationCondition(hidden_size) if local_degradation_conditioning else None
         )
 
     def initialize_weights(self):
@@ -403,11 +410,12 @@ class JiT(nn.Module):
         t: flow time, (N,)
         y: retained class labels, (N,); restoration uses the null class
         blur: spatially aligned blurred-image condition, (N, C, H, W)
-        degradation: optional [N,3] probabilities in light/medium/heavy order
+        degradation: global [N,3] or local [N,3,h,w] light/medium/heavy probabilities
         """
         if blur is None:
             raise ValueError("A0 JiT requires a blurred-image condition: blur must not be None")
-        if degradation is not None and self.degradation_condition is None:
+        if (degradation is not None and self.degradation_condition is None
+                and self.local_degradation_condition is None):
             raise ValueError("Degradation adapter is disabled in A0 mode")
         if blur.shape != x.shape:
             raise ValueError(
@@ -419,7 +427,7 @@ class JiT(nn.Module):
         t_emb = self.t_embedder(t)
         y_emb = self.y_embedder(y)
         c = t_emb + y_emb
-        if degradation is not None:
+        if degradation is not None and self.degradation_condition is not None:
             if degradation.shape != (x.shape[0], 3):
                 raise ValueError("Degradation probabilities must have shape [B,3]")
             c = c + self.degradation_condition(degradation.to(device=c.device, dtype=c.dtype))
@@ -430,6 +438,15 @@ class JiT(nn.Module):
         x = self.x_embedder(x)
         x += self.pos_embed
         x = x + self.blur_condition_encoder(blur)
+        if degradation is not None and self.local_degradation_condition is not None:
+            if degradation.ndim != 4 or degradation.shape[:2] != (x.shape[0], 3):
+                raise ValueError("Local probabilities must have shape [B,3,h,w]")
+            # PatchEmbed.flatten(2) and C's adapter both use row-major (y,x)
+            # order. Inject only image tokens, before adding class-context tokens.
+            token_grid = (blur.shape[-2] // self.patch_size, blur.shape[-1] // self.patch_size)
+            x = x + self.local_degradation_condition(
+                degradation.to(device=x.device, dtype=x.dtype), token_grid
+            )
 
         for i, block in enumerate(self.blocks):
             # in-context
