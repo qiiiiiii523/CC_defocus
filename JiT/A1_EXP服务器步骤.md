@@ -1,6 +1,6 @@
-# jit-a1-exp：原目录完成 S0/S1/S2 三组实验
+# jit-a1-exp：2000/300快速排查，原目录完成三组实验
 
-更新：2026-10-14。服务器直接使用 `/home/qht/大创/CC_defocus`，已切换 jit-a1-exp；不再克隆新目录。本轮三组都做，共用一次生成的合成数据、同一原A0 EMA2起点和训练预算。
+更新：2026-10-14。服务器直接使用 `/home/qht/大创/CC_defocus`，已切换 jit-a1-exp；不再克隆新目录。本轮先做2000张训练/300张验证的快速机制排查，三组都做，共用一次生成的合成数据、同一原A0 EMA2起点和训练预算。
 
 ## 1. 更新代码并固定公共路径
 
@@ -15,6 +15,7 @@ export A1_DATA_ROOT="$ROOT"
 export A0_CKPT="$ROOT/checkpoints/jit_a0_scratch_full66976_charb1_e20/checkpoint-last.pth"
 export LOCAL_ESTIMATOR="$ROOT/JiT/degradation/weights/local-estimator-v3.pt"
 unset A1_EXP_DATA_DIR A1_EXP_EPOCHS A1_EXP_WARMUP A1_EXP_TAG
+export A1_EXP_DATA_DIR="$ROOT/experiments/a1_oracle_synthetic/data_2000"
 ```
 
 不覆盖原权重或结果。若git pull因本地代码修改发生冲突，保留并处理这些修改，不使用reset --hard或强制覆盖。本地已有的生成代码现已包含在分支里，不需要另外上传交接包；V3权重仍是原目录中已有的二进制文件。
@@ -33,30 +34,32 @@ cd "$ROOT"
 
 ## 3. 一次性生成三组共用的合成数据
 
-如果data_v1已经生成完成，直接进入下一节，不要重新生成。若尚未生成，执行：
+如果data_2000已经生成完成，直接进入下一节，不要重新生成。若尚未生成，执行：
 
 ```bash
 mkdir -p "$ROOT/experiments/a1_oracle_synthetic"
 nohup env CUDA_VISIBLE_DEVICES=0 python -u JiT/generate_a1_synthetic.py \
-  --project-root "$ROOT" --train-count 0 --val-count 300 \
+  --project-root "$ROOT" --train-count 2000 --val-count 300 \
+  --train-manifest "$ROOT/prepared/manifests/debug_train.jsonl" \
+  --val-manifest "$ROOT/prepared/manifests/debug_val.jsonl" \
   --allow-group-overlap --device cuda \
-  > "$ROOT/experiments/a1_oracle_synthetic/generation_v1.log" 2>&1 < /dev/null &
+  > "$ROOT/experiments/a1_oracle_synthetic/generation_2000.log" 2>&1 < /dev/null &
 ```
 
 ```bash
-tail -f "$ROOT/experiments/a1_oracle_synthetic/generation_v1.log"
+tail -f "$ROOT/experiments/a1_oracle_synthetic/generation_2000.log"
 ```
 
 Ctrl+C只退出日志查看，生成进程继续。等待日志最后出现Complete，然后确认：
 
 ```bash
-python -c 'import json; c=json.load(open("experiments/a1_oracle_synthetic/data_v1/generation_config.json")); print(c["status"], c["train_count"], c["val_count"]); assert c["status"]=="complete"'
+python -c 'import json; c=json.load(open("experiments/a1_oracle_synthetic/data_2000/generation_config.json")); print(c["status"], c["train_count"], c["val_count"]); assert c["status"]=="complete"'
 ```
 
-本命令train-count=0沿用全部66,976张训练清晰源图、val-count=300。它们生成新的合成模糊图，不能用旧真实模糊图的成绩代替S0/S1。源清晰图只引用已有路径，不重复复制。
+本命令使用debug_train.jsonl的2000张清晰源图和debug_val.jsonl的300张源图，生成固定的新合成模糊图。已核对本地两份清单的数量和split；服务器以实际清单及生成配置为准。使用debug清单比从全量另抽2000张更贴近队友交接的源图范围，但她的实际清单哈希尚未提供，不能仅凭文件名认定全部生成协议一致。不能用旧真实模糊图的成绩代替S0/S1。
 
 ```text
-/home/qht/大创/CC_defocus/experiments/a1_oracle_synthetic/data_v1/
+/home/qht/大创/CC_defocus/experiments/a1_oracle_synthetic/data_2000/
   generation_config.json
   blur/train/、blur/val/
   truth/train/、truth/val/
@@ -64,7 +67,7 @@ python -c 'import json; c=json.load(open("experiments/a1_oracle_synthetic/data_v
   manifests/synthetic_val.jsonl
 ```
 
-代码拒绝覆盖非空data_v1。生成中途失败时先分析日志；确需重生成可用新的output-dir，再把A1_EXP_DATA_DIR设为新目录，三组同时使用它。不要删旧数据或强行重跑覆盖。
+代码拒绝覆盖非空data_2000。生成中途失败时先分析日志；确需重生成可用新的output-dir，再把A1_EXP_DATA_DIR设为新目录，三组同时使用它。不要删旧数据或强行重跑覆盖。
 
 ## 4. 固定三组实验标签
 
@@ -140,7 +143,7 @@ S2本轮一定做，不取决于S0/S1的分数；这里只是将第三组安排�
 | 评价 | EMA2、Euler一步、seed0、BF16；仅最后一轮评价 |
 | S1/S2融合 | 同一局部MLP、零初始化门控和图像token注入 |
 
-全量66,976对时每组10轮共83,720次更新。若使用了既有小规模合成子集，三组仍需同样本数和更新次数，实际数量以generation_config和run_config为准。
+本轮每组2000张、batch8、10轮，共2500次更新。三组必须使用相同样本和更新次数，实际数量以generation_config和run_config为准。这是快速筛查：若无收益，还需结合损失、门控与梯度考虑适配训练是否充分，不能直接排除融合能力。此前全量data_v1及其结果保留，不与本轮混合比较。以后扩大规模时需为三组一起换固定数据和预算。
 
 生成函数来自交接包。light/medium/heavy对应高斯核(sigma1,K7)/(sigma2,K13)/(sigma3.5,K23)，reflect边界。64×64原生概率场缩放到256×256后混合三幅高斯模糊结果；真值原场保存为float32 NPZ。RGB PNG有uint8量化，配置明确记录。条件仍按64→16×16→MLP→gate注入，不更改JiT主干或新增A2/A3损失。
 
@@ -174,8 +177,8 @@ tar --exclude='*.pth' --exclude='*.pt' --exclude='events.out.tfevents.*' \
   -czf "a1_exp_three_${A1_EXP_TAG}.tar.gz" \
   checkpoints/jit_a1_exp_{s0,s1,s2}_"${A1_EXP_TAG}" \
   results/jit_a1_exp_{s0,s1,s2}_"${A1_EXP_TAG}" \
-  experiments/a1_oracle_synthetic/data_v1/generation_config.json \
-  experiments/a1_oracle_synthetic/data_v1/manifests \
+  experiments/a1_oracle_synthetic/data_2000/generation_config.json \
+  experiments/a1_oracle_synthetic/data_2000/manifests \
   JiT/train_a1_exp.sh JiT/main_a1_exp.py
 ```
 
@@ -192,9 +195,9 @@ cd "$ROOT/JiT"
 CUDA_VISIBLE_DEVICES=0 python -u main_a1_exp.py \
   --resume "$ROOT/checkpoints/jit_a1_exp_s2_${A1_EXP_TAG}/checkpoint-last.pth" \
   --degradation_mode oracle_local --init_mode scratch --data_root "$ROOT" \
-  --generation_config "$ROOT/experiments/a1_oracle_synthetic/data_v1/generation_config.json" \
-  --train_manifest "$ROOT/experiments/a1_oracle_synthetic/data_v1/manifests/synthetic_train.jsonl" \
-  --val_manifest "$ROOT/experiments/a1_oracle_synthetic/data_v1/manifests/synthetic_val.jsonl" \
+  --generation_config "$ROOT/experiments/a1_oracle_synthetic/data_2000/generation_config.json" \
+  --train_manifest "$ROOT/experiments/a1_oracle_synthetic/data_2000/manifests/synthetic_train.jsonl" \
+  --val_manifest "$ROOT/experiments/a1_oracle_synthetic/data_2000/manifests/synthetic_val.jsonl" \
   --epochs 10 --amp_bf16 --run_metrics \
   --model_name "jit_a1_exp_s2_${A1_EXP_TAG}" \
   --output_dir "$ROOT/checkpoints/jit_a1_exp_s2_${A1_EXP_TAG}" \

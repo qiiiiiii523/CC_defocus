@@ -13,7 +13,7 @@ def parser():
     p.add_argument("--train-manifest", type=Path)
     p.add_argument("--val-manifest", type=Path)
     p.add_argument("--output-dir", type=Path)
-    p.add_argument("--train-count", type=int, default=5000, help="0 = all source training pairs")
+    p.add_argument("--train-count", type=int, default=2000, help="0 = all selected source training pairs")
     p.add_argument("--val-count", type=int, default=300)
     p.add_argument("--seed", type=int, default=20261014)
     p.add_argument("--image-size", type=int, default=256)
@@ -37,9 +37,9 @@ def main(args):
     from local_synthetic import sample_spatial_weights
     from spatial_psf import reblur_spatial_mixture
     from psf import LEVELS
-    train_path = args.train_manifest or root / "prepared/manifests/3dh_full_train.jsonl"
+    train_path = args.train_manifest or root / "prepared/manifests/debug_train.jsonl"
     val_path = args.val_manifest or root / "prepared/manifests/debug_val.jsonl"
-    out = (args.output_dir or root / "experiments/a1_oracle_synthetic/data_v1").resolve()
+    out = (args.output_dir or root / "experiments/a1_oracle_synthetic/data_2000").resolve()
     if not out.is_relative_to(root):
         raise ValueError("Place generated data under project root for portable manifests")
     if out.exists() and any(out.iterdir()):
