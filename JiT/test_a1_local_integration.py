@@ -35,6 +35,12 @@ def local_model(mode):
     args.model = "small"
     with patch.dict("denoiser.JiT_models", {"small": small_jit}):
         model = Denoiser(args)
+    # The production RoPE stores plain CUDA tensors, not registered buffers.
+    # Tiny CPU tests must explicitly move these attributes as well as parameters.
+    model.cpu()
+    for rope in (model.net.feat_rope, model.net.feat_rope_incontext):
+        rope.freqs_cos = rope.freqs_cos.cpu()
+        rope.freqs_sin = rope.freqs_sin.cpu()
     # A restored A0 has trained output weights; a zero output head would mask
     # conditioning errors and prevent the new gate from learning in this check.
     with torch.no_grad():
@@ -105,7 +111,7 @@ class LocalIntegrationTests(unittest.TestCase):
 
     def test_delivered_weights_blur_only_freezing_and_cache(self):
         model = local_model("predicted_local")
-        model.load_degradation_estimator(Path(__file__).parent / "degradation/weights/local-estimator.pt")
+        model.load_degradation_estimator(Path(__file__).parent / "degradation/weights/local-estimator-v3.pt")
         model.train()
         estimator = model.degradation_estimator
         self.assertFalse(estimator.training)
