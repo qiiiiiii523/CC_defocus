@@ -23,7 +23,7 @@ class Denoiser(nn.Module):
             attn_drop=args.attn_dropout,
             proj_drop=args.proj_dropout,
             degradation_conditioning=self.degradation_mode in ("fixed", "predicted"),
-            local_degradation_conditioning=self.degradation_mode in ("fixed_local", "predicted_local"),
+            local_degradation_conditioning=self.degradation_mode in ("fixed_local", "predicted_local", "oracle_local"),
         )
         self.degradation_estimator = (
             BlurEstimator().eval().requires_grad_(False)
@@ -90,6 +90,18 @@ class Denoiser(nn.Module):
         return incompatible
 
     def _degradation_probabilities(self, blur, degradation=None):
+        if self.degradation_mode == "oracle_local":
+            if degradation is None:
+                raise ValueError("oracle_local requires the actual synthetic generation field")
+            if (degradation.ndim != 4 or degradation.shape[:2] != (blur.shape[0], 3)
+                    or min(degradation.shape[-2:]) < 1):
+                raise ValueError("Oracle field must be [B,3,h,w], aligned with the input")
+            field = degradation.detach().to(device=blur.device, dtype=torch.float32)
+            if not torch.isfinite(field).all() or bool((field < 0).any()) or bool((field > 1).any()):
+                raise ValueError("Oracle probabilities must be finite and in [0,1]")
+            if not torch.allclose(field.sum(1), torch.ones_like(field[:, 0]), atol=1e-5, rtol=0):
+                raise ValueError("Oracle channels must sum to one in light/medium/heavy order")
+            return field
         if self.degradation_mode == "none":
             if degradation is not None:
                 raise ValueError("Explicit degradation is not allowed in none mode")

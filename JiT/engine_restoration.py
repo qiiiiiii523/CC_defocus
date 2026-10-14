@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import sys
 from pathlib import Path
@@ -44,6 +45,8 @@ def train_one_epoch_a0(
         lr_sched.adjust_learning_rate(
             optimizer, step / len(data_loader) + epoch, args
         )
+        if getattr(args, "synthetic_experiment", False):
+            model_without_ddp._exp_record_condition = step % args.log_freq == 0
         clear = batch["clear"].to(device, non_blocking=True)
         blur = batch["blur"].to(device, non_blocking=True)
         identity_fraction = float(batch["is_identity"].float().mean().item())
@@ -55,7 +58,9 @@ def train_one_epoch_a0(
             enabled=amp_enabled,
         ):
             losses = model(
-                clear, blur, degradation=None, return_loss_components=True
+                clear, blur, degradation=(batch["truth_probabilities"].to(device, non_blocking=True)
+                    if model_without_ddp.degradation_mode == "oracle_local" else None),
+                return_loss_components=True
             )
             loss = losses["loss"]
 
@@ -68,6 +73,20 @@ def train_one_epoch_a0(
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if getattr(args, "synthetic_experiment", False) and model_without_ddp._exp_record_condition:
+            adapter = model_without_ddp.net.local_degradation_condition
+            record = {"epoch": epoch, "step": step, **model_without_ddp._exp_condition_stats}
+            if adapter is not None:
+                gradients = [p.grad.detach().float().square().sum().item()
+                             for p in adapter.parameters() if p.grad is not None]
+                record.update(local_gate=float(adapter.gate.detach().item()),
+                              local_gradient_norm=math.sqrt(sum(gradients)))
+            else:
+                record.update(local_gate=None, local_gradient_norm=0, local_residual_rms=0)
+            rgb = record.get("rgb_residual_rms", 0)
+            record["local_to_rgb_rms"] = record.get("local_residual_rms", 0) / rgb if rgb else None
+            with (args.output_dir / "condition_diagnostics.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
         if args.clip_grad is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
         optimizer.step()
@@ -147,6 +166,7 @@ def restore_fixed_validation(
         ):
             parameter.copy_(ema_parameter)
 
+    model_without_ddp._exp_record_condition = False
     model_without_ddp.eval()
     saved_count = 0
     try:
@@ -169,7 +189,8 @@ def restore_fixed_validation(
             ):
                 prediction = model_without_ddp.generate(
                     blur,
-                    degradation=None,
+                    degradation=(batch["truth_probabilities"].to(device, non_blocking=True)
+                        if model_without_ddp.degradation_mode == "oracle_local" else None),
                     noise=fixed_noise,
                 )
 

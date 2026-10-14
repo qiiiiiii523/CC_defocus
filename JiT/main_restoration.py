@@ -41,7 +41,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     # Architecture and official JiT flow settings.
     parser.add_argument("--model", default="JiT-B/16")
     parser.add_argument("--degradation_mode", default=None,
-                        choices=("none", "fixed", "predicted", "fixed_local", "predicted_local"),
+                        choices=("none", "fixed", "predicted", "fixed_local", "predicted_local", "oracle_local"),
                         help="Fresh runs default to none; resumes inherit the saved mode.")
     parser.add_argument("--degradation_checkpoint", type=Path, default=None,
                         help="C's frozen global/local estimator; required for fresh predicted modes.")
@@ -304,7 +304,9 @@ def _run_metrics_and_sync(args) -> None:
         torch.distributed.barrier()
 
 
-def main(args) -> None:
+def main(args, *, dataset_class=A0PairedDataset, metrics_runner=_run_metrics_and_sync, model_factory=Denoiser) -> None:
+    if args.degradation_mode == "oracle_local" and dataset_class is A0PairedDataset:
+        raise ValueError("Use main_a1_exp.py for oracle_local; real paired manifests contain no oracle truth")
     if args.resume is not None and args.a0_checkpoint is not None:
         raise ValueError("--resume and --a0_checkpoint are mutually exclusive")
     if args.eval_only and args.a0_checkpoint is not None:
@@ -333,6 +335,8 @@ def main(args) -> None:
             if saved is not None and saved != getattr(args, field):
                 raise ValueError(f"A0 starting {field} mismatch: saved {saved}, requested {getattr(args, field)}")
     args.degradation_mode = _resolve_degradation_mode(args.degradation_mode, resume_checkpoint)
+    if args.degradation_mode == "oracle_local" and dataset_class is A0PairedDataset:
+        raise ValueError("oracle_local requires the isolated synthetic dataset entry")
     args.init_mode = _resolve_init_mode(
         args.init_mode, resume_checkpoint if resume_checkpoint is not None else a0_checkpoint
     )
@@ -396,7 +400,7 @@ def main(args) -> None:
     train_loader = None
     train_sampler = None
     if not args.eval_only:
-        full_train_dataset = A0PairedDataset(
+        full_train_dataset = dataset_class(
             args.train_manifest,
             split="train",
             image_size=args.img_size,
@@ -440,7 +444,7 @@ def main(args) -> None:
         if len(train_loader) == 0:
             raise ValueError("Training loader is empty; reduce batch size or use overfit mode")
 
-    val_dataset = A0PairedDataset(
+    val_dataset = dataset_class(
         args.val_manifest,
         split="val",
         image_size=args.img_size,
@@ -464,7 +468,7 @@ def main(args) -> None:
         drop_last=False,
     )
 
-    model = Denoiser(args)
+    model = model_factory(args)
     if resume_checkpoint is not None:
         model.load_state_dict(resume_checkpoint["model"], strict=True)
         print(f"Loaded A0 model checkpoint: {resume_path}")
@@ -541,9 +545,12 @@ def main(args) -> None:
             amp_bf16=args.amp_bf16,
             eval_seed=args.eval_seed,
         )
-        _run_metrics_and_sync(args)
+        metrics_runner(args)
         return
 
+    if getattr(args, "synthetic_experiment", False):
+        torch.manual_seed(seed)
+        np.random.seed(seed)
     args.global_step = getattr(args, "global_step", 0)
     args.train_manifest_sha256 = _manifest_sha256(args.train_manifest)
     args.val_manifest_sha256 = _manifest_sha256(args.val_manifest)
@@ -616,7 +623,7 @@ def main(args) -> None:
                 amp_bf16=args.amp_bf16,
                 eval_seed=args.eval_seed,
             )
-            _run_metrics_and_sync(args)
+            metrics_runner(args)
 
         if log_writer is not None:
             log_writer.flush()

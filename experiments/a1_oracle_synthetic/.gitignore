@@ -1,0 +1,6 @@
+data*/
+blur/
+truth/
+manifests/
+*.log
+*.pid
