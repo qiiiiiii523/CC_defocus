@@ -58,14 +58,17 @@ python -c 'import json; c=json.load(open("experiments/a1_oracle_synthetic/data_2
 
 本命令使用debug_train.jsonl的2000张清晰源图和debug_val.jsonl的300张源图，生成固定的新合成模糊图。已核对本地两份清单的数量和split；服务器以实际清单及生成配置为准。使用debug清单比从全量另抽2000张更贴近队友交接的源图范围，但她的实际清单哈希尚未提供，不能仅凭文件名认定全部生成协议一致。不能用旧真实模糊图的成绩代替S0/S1。
 
-```text
-/home/qht/大创/CC_defocus/experiments/a1_oracle_synthetic/data_2000/
-  generation_config.json
-  blur/train/、blur/val/
-  truth/train/、truth/val/
-  manifests/synthetic_train.jsonl
-  manifests/synthetic_val.jsonl
-```
+看到 `complete 2000 300` 就表示第3步已完成，直接进入第4步。以下表格仅说明生成文件的位置，不是终端命令。
+
+所有文件均位于 `/home/qht/大创/CC_defocus/experiments/a1_oracle_synthetic/data_2000/` 下：
+
+| 相对路径 | 内容 |
+|---|---|
+| `generation_config.json` | 生成配置、数量和完成状态 |
+| `blur/train/`、`blur/val/` | 合成模糊图 |
+| `truth/train/`、`truth/val/` | 实际生成概率场 |
+| `manifests/synthetic_train.jsonl` | 固定训练清单 |
+| `manifests/synthetic_val.jsonl` | 固定验证清单 |
 
 代码拒绝覆盖非空data_2000。生成中途失败时先分析日志；确需重生成可用新的output-dir，再把A1_EXP_DATA_DIR设为新目录，三组同时使用它。不要删旧数据或强行重跑覆盖。
 
