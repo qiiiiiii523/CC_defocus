@@ -10,9 +10,12 @@ Charbonnier、恒等样本机制与采样过程；不增加 PSF、核掩膜或 A
   patch 编码器的随机参数复制到模糊条件编码器。不共享参数；adapter 和
   gate 保持现有初始化，gate 从 0 开始。不会读取 `--pretrained`，即使
   默认官方权重文件不存在也不影响 scratch 初始化。
-- `--init_mode pretrained`：仍使用官方权重初始化，行为与旧 A0 相同。
-- 不指定初始化模式：新实验默认 pretrained，resume 则继承 checkpoint
+- `--init_mode pretrained`：显式选择加载官方 JiT 权重初始化，行为与旧 A0 相同。
+  默认文件为 `JiT/pretrained/jit-b-16/checkpoint-last.pth`，也可通过
+  `--pretrained`指定文件；文件不存在会报错，不会自动下载。
+- 不指定初始化模式：新实验默认 scratch，resume 则继承 checkpoint
   中记录的模式。旧 checkpoint 没有此字段时按 pretrained 处理。
+  为方便阅读实验命令，仍建议明确写上`--init_mode scratch`。
 - `--resume`：严格加载已有模型、EMA、优化器、epoch及已记录的更新步数。
   不重新复制条件编码器。显式指定与已保存模式冲突的 init_mode 会报错。
   训练恢复需重复原来的损失、identity、EMA等配置；不允许偷偷更换训练清单。
@@ -28,6 +31,9 @@ Charbonnier、恒等样本机制与采样过程；不增加 PSF、核掩膜或 A
 默认仍读取 `prepared/manifests/debug_train.jsonl`（2000对）及
 `debug_val.jsonl`（300对）。小样本模式只是从2000对取16/32对训练，验证
 仍是300对，并不自动生成训练集上的过拟合评价。
+
+`scratch`只表示随机初始化，与数据量无关。本轮小规模优化使用随机初始化
+加固定2,000/300；六万多对训练需要另外指定对应的训练清单与数量。
 
 完整训练时指定新的 JSONL `--train_manifest`，并设置
 `--expected_train_pairs 0`（接受任意非空数量），或提供明确的期望数量。

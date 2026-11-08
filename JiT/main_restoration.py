@@ -120,7 +120,7 @@ def get_args_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--init_mode", default=None, choices=("pretrained", "scratch"),
-        help="Fresh runs default to pretrained; resumes inherit the saved initialization mode.",
+        help="Fresh runs default to scratch; resumes inherit the saved initialization mode.",
     )
     parser.add_argument(
         "--train_manifest",
@@ -187,7 +187,7 @@ def _resolve_init_mode(requested, checkpoint=None):
         if requested is not None and requested != saved:
             raise ValueError(f"Resume init_mode mismatch: requested {requested}, saved {saved}")
         return saved
-    return requested or "pretrained"
+    return requested or "scratch"
 
 
 def _initialize_fresh_model(model, args):

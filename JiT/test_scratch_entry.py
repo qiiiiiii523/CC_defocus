@@ -32,9 +32,12 @@ class ScratchEntryTests(unittest.TestCase):
         self.assertEqual(args.expected_val_pairs, 300)
         self.assertEqual(args.eval_weights, 'ema1')
         resolve = self.ns['_resolve_init_mode']
-        self.assertEqual(resolve(None), 'pretrained')
+        self.assertIsNone(args.init_mode)  # Resume must inherit the saved mode.
+        self.assertEqual(resolve(args.init_mode), 'scratch')
         self.assertEqual(resolve('scratch'), 'scratch')
+        self.assertEqual(resolve('pretrained'), 'pretrained')
         self.assertEqual(resolve(None, {'args': SimpleNamespace(init_mode='scratch')}), 'scratch')
+        self.assertEqual(resolve(None, {'args': {'init_mode': 'pretrained'}}), 'pretrained')
         self.assertEqual(resolve(None, {'args': {}}), 'pretrained')
         with self.assertRaises(ValueError):
             resolve('pretrained', {'args': {'init_mode': 'scratch'}})
@@ -44,7 +47,9 @@ class ScratchEntryTests(unittest.TestCase):
         model = SimpleNamespace(net=SimpleNamespace(
             initialize_blur_condition_from_state_embedder=lambda: copied.append(True)))
         # Deliberately lacks is_file(): scratch must not even inspect this path.
-        args = SimpleNamespace(init_mode='scratch', pretrained=object())
+        args = self.ns['get_args_parser']().parse_args([])
+        args.init_mode = self.ns['_resolve_init_mode'](args.init_mode)
+        args.pretrained = object()
         self.ns['_initialize_fresh_model'](model, args)
         self.assertEqual(copied, [True])
         self.assertEqual(self.loads, [])
